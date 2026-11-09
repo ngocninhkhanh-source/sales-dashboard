@@ -608,19 +608,40 @@ def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
     ways = list(g.get("match_by", ["guest_email", "title_name"]))
     out = []
     now_dt = datetime.now(TZ)
+    
     for r in meetings.itertuples():
         found, how, amount, time_diff_str = None, "", 0.0, "—"
         if r.end <= now_dt and not emails.empty:
+            # Lọc các email gửi từ khi bắt đầu meeting trở về sau (cùng Sale)
             c = emails[(emails["sender"] == str(r.email).lower()) & (emails["ts"] >= r.ts)]
             guests = {x.strip() for x in str(r.guests).split(",") if x.strip()}
-            name = title_name_tokens(r.title)
+            
+            # Lấy các từ khóa từ tiêu đề lịch
+            name_tokens = title_name_tokens(r.title)
+            
             for e in c.sort_values("ts").itertuples():
-                if ("guest_email" in ways and guests & set(e.rcpt.split(","))) or \
-                   ("title_name" in ways and name and name <= set(tokens(e.subject))):
-                    found, how, amount = e, ("email khách" if "guest_email" in ways else "tên tiêu đề"), e.est_amount
+                matched_by_rule = ""
+                
+                # Cách 1: Khớp qua email khách (như cũ)
+                if "guest_email" in ways and guests & set(e.rcpt.split(",")):
+                    matched_by_rule = "email khách"
+                
+                # Cách 2 (Đã cải tiến): Khớp linh hoạt theo tiêu đề
+                # Chỉ cần ÍT NHẤT 50% số từ khóa (hoặc ít nhất 1 từ khóa đặc trưng) xuất hiện trong tiêu đề email
+                elif "title_name" in ways and name_tokens:
+                    email_subj_tokens = set(tokens(e.subject))
+                    common_tokens = name_tokens & email_subj_tokens
+                    
+                    # Nếu trùng từ khóa chính hoặc có tỷ lệ trùng khớp >= 40% các từ đặc trưng
+                    if common_tokens or (len(name_tokens) > 0 and len(common_tokens) / len(name_tokens) >= 0.4):
+                        matched_by_rule = "tên tiêu đề (linh hoạt)"
+                
+                if matched_by_rule:
+                    found, how, amount = e, matched_by_rule, e.est_amount
                     time_diff = e.ts - r.end
                     time_diff_str = fmt_time_delta(time_diff)
                     break
+                    
         out.append({
             "event_id": r.event_id, 
             "recap": found is not None,
