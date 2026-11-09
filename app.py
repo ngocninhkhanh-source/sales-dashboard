@@ -1059,45 +1059,59 @@ def page_leads():
         st.info("Chưa có dữ liệu lead tồn theo stage.")
         return
 
-    stage_view_full = stage_tbl.copy()
-    if "lead_open" not in stage_view_full.columns and open_stages:
-        stage_view_full["lead_open"] = stage_view_full[[s for s in open_stages if s in stage_view_full.columns]].sum(axis=1)
-    
-    stage_view_full = stage_view_full.rename(columns={"lead_open": "Tồn"})
+    # Chuẩn bị dữ liệu bảng stage từ stage_tbl
+    stage_view_full = stage_tbl.loc[lb["sale"]].rename(columns={"lead_open": "Tồn"}) if "sale" in stage_tbl.index.names else stage_tbl.copy().rename(columns={"lead_open": "Tồn"})
     existing_stages = [s for s in stages if s in stage_view_full.columns]
     stage_view_full["Tổng"] = stage_view_full[existing_stages].sum(axis=1)
-    stage_view_full = stage_view_full.reset_index().rename(columns={"index": "Sale"})
     
+    # Đưa index về cột và đổi tên duy nhất thành "Sale"
+    stage_view_full = stage_view_full.reset_index()
+    if "index" in stage_view_full.columns:
+        stage_view_full = stage_view_full.rename(columns={"index": "Sale"})
+    elif "sale" in stage_view_full.columns:
+        stage_view_full = stage_view_full.rename(columns={"sale": "Sale"})
+        
+    # Loại bỏ các cột trùng tên nếu có
+    stage_view_full = stage_view_full.loc[:, ~stage_view_full.columns.duplicated()]
+
     # Bộ lọc theo Sale
     col_f1, col_f2 = st.columns([1, 2])
-    all_sales_in_leads = ["Tất cả"] + sorted(stage_view_full["Sale"].unique().tolist()) if "Sale" in stage_view_full.columns else ["Tất cả"]
+    all_sales_in_leads = ["Tất cả"] + sorted(stage_view_full["Sale"].unique().tolist())
     selected_sale_lead = col_f1.selectbox("🔍 Lọc theo Sale", all_sales_in_leads, key="lead_sale_filter")
     
     filtered_stage_df = stage_view_full.copy()
-    if selected_sale_lead != "Tất cả" and "Sale" in filtered_stage_df.columns:
+    if selected_sale_lead != "Tất cả":
         filtered_stage_df = filtered_stage_df[filtered_stage_df["Sale"] == selected_sale_lead]
         
-    if "Tồn" in filtered_stage_df.columns:
-        filtered_stage_df = filtered_stage_df.sort_values("Tồn", ascending=False)
-        
+    filtered_stage_df = filtered_stage_df.sort_values("Tồn", ascending=False)
+    
+    # Tính dòng TỔNG khi chọn "Tất cả"
     if selected_sale_lead == "Tất cả" and len(filtered_stage_df) > 1:
         num_cols = filtered_stage_df.select_dtypes(include=[np.number]).columns
-        if len(num_cols) > 0:
-            sum_row = filtered_stage_df[num_cols].sum().to_frame().T
-            sum_row["Sale"] = "TỔNG"
-            filtered_stage_df = pd.concat([filtered_stage_df, sum_row], ignore_index=True)
+        sum_row = filtered_stage_df[num_cols].sum().to_frame().T
+        sum_row["Sale"] = "TỔNG"
+        filtered_stage_df = pd.concat([filtered_stage_df, sum_row], ignore_index=True)
         
-    st.markdown(f"Hiển thị **{len(filtered_stage_df[filtered_stage_df.get('Sale', '') != 'TỔNG'])}** nhân sự")
+    st.markdown(f"Hiển thị **{len(filtered_stage_df[filtered_stage_df['Sale'] != 'TỔNG'])}** nhân sự")
     
-    st.dataframe(filtered_stage_df, hide_index=True, width="stretch", column_config={
-        "Sale": st.column_config.TextColumn(pinned=True),
-        "Tồn": st.column_config.NumberColumn(help="Tổng lead chưa ra kết quả"),
-        "Tổng": st.column_config.NumberColumn(help="Tổng tất cả stage trong bảng"),
-        **{c: st.column_config.NumberColumn(help="Không tính vào Tồn") for c in closed_stages if c in stages},
-    })
+    st.dataframe(
+        filtered_stage_df, 
+        hide_index=True, 
+        width="stretch", 
+        column_config={
+            "Sale": st.column_config.TextColumn("Sale", pinned=True),
+            "Tồn": st.column_config.NumberColumn(help="Tổng lead chưa ra kết quả"),
+            "Tổng": st.column_config.NumberColumn(help="Tổng tất cả stage trong bảng"),
+            **{c: st.column_config.NumberColumn(help="Không tính vào Tồn") for c in closed_stages if c in stages},
+        }
+    )
     
-    st.download_button("⬇️ Tải bảng lead (CSV)", filtered_stage_df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f"lead_ton_theo_stage_{now:%Y%m%d}.csv", mime="text/csv")
+    st.download_button(
+        "⬇️ Tải bảng lead (CSV)", 
+        filtered_stage_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"lead_ton_theo_stage_{now:%Y%m%d}.csv", 
+        mime="text/csv"
+    )
 def page_meetings():
     k = st.columns(5)
     k[0].metric("📅 Meeting", fmt_int(lb["meetings"].sum()))
