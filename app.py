@@ -1138,7 +1138,7 @@ def page_all_recap_emails():
         sale_name = email2sale.get(s_email, s_email)
         
         msg_id = getattr(em, "message_id", "")
-        link = f"https://mail.google.com/mail/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
+        link = f"https://mail.google.com/mail/u/2/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
         
         rows.append({
             "Ngày gửi recap": em.ts.tz_localize(None) if not pd.isna(em.ts) else None,
