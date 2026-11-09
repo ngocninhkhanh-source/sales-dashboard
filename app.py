@@ -6,7 +6,7 @@ Nguồn dữ liệu:
   • VoiceCloud      : số cuộc gọi & thời lượng gọi
   • Google Calendar : số Meeting với khách
   • Gmail           : kiểm tra email recap + Estimate doanh thu từ báo giá
-  • Bitrix Sync     : Đồng bộ qua Bookmarklet cá nhân của Leader
+  • Bitrix Sync     : Đồng bộ qua Extension / File JSON của Leader
 """
 
 from __future__ import annotations
@@ -257,19 +257,27 @@ def load_roster_from_sheet() -> pd.DataFrame:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# NGUỒN 1 — BITRIX24 (Hỗ trợ đọc từ File Sync của Bookmarklet)
+# NGUỒN 1 — BITRIX24 (Hỗ trợ đọc tự động từ Sync File / Google Drive)
 # ════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=60)
-@st.cache_data(ttl=120, show_spinner="Đang đọc dữ liệu Bitrix24 từ Google Drive...")
+def _bitrix_frame(rows: list[dict], date_field: str) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["ts", "bitrix_id", "amount"])
+    df = pd.DataFrame(rows)
+    amount = pd.to_numeric(df["OPPORTUNITY"], errors="coerce") if "OPPORTUNITY" in df else 0
+    return pd.DataFrame({
+        "ts": pd.to_datetime(df[date_field], errors="coerce", utc=True).dt.tz_convert(TZ),
+        "bitrix_id": df["ASSIGNED_BY_ID"].map(clean_id),
+        "amount": pd.Series(amount, index=df.index).fillna(0),
+    })
+
+
 @st.cache_data(ttl=60, show_spinner="Đang đọc dữ liệu Bitrix24 sync...")
 def load_bitrix_from_sync_file():
     raw_data = None
     
-    # 1. Kiểm tra file upload trong session nếu có
     if "uploaded_bitrix_data" in st.session_state and st.session_state["uploaded_bitrix_data"]:
         raw_data = st.session_state["uploaded_bitrix_data"]
 
-    # 2. Đọc từ Google Drive nếu có kết nối OAuth Leader
     if not raw_data and leader_mode():
         try:
             from googleapiclient.discovery import build
@@ -289,7 +297,6 @@ def load_bitrix_from_sync_file():
         except Exception:
             pass
 
-    # 3. Đọc từ file local lưu cùng thư mục app.py
     if not raw_data:
         try:
             with open("bitrix_sync_data.json", "r", encoding="utf-8") as f:
@@ -300,14 +307,12 @@ def load_bitrix_from_sync_file():
     if not raw_data:
         return None
 
-    # Bóc tách và chuyển đổi dữ liệu sang DataFrames
     leads_raw = raw_data.get("leads_raw", [])
     deals_won_raw = raw_data.get("deals_won_raw", [])
     
     df_leads = _bitrix_frame(leads_raw, "DATE_CREATE") if leads_raw else pd.DataFrame(columns=["ts", "bitrix_id", "amount"])
     df_deals_won = _bitrix_frame(deals_won_raw, "CLOSEDATE") if deals_won_raw else pd.DataFrame(columns=["ts", "bitrix_id", "amount"])
     
-    # Gom dữ liệu Lead tồn theo stage
     stages, _ = lead_stage_config()
     stage_counts = {}
     for l in leads_raw:
@@ -325,6 +330,101 @@ def load_bitrix_from_sync_file():
         "deals_won": df_deals_won,
         "lead_stages": df_stages,
         "updated_at": raw_data.get("updated_at", "Chưa rõ")
+    }
+
+
+def _bitrix(method: str, params: dict) -> dict:
+    base = secret("bitrix24", "webhook_url").rstrip("/")
+    r = requests.post(f"{base}/{method}.json", json=params, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(f"Bitrix24 {method}: {data.get('error_description', data['error'])}")
+    return data
+
+
+def _bitrix_list(method: str, params: dict, max_items: int = 20000) -> list[dict]:
+    items, start = [], 0
+    while True:
+        data = _bitrix(method, {**params, "start": start})
+        items.extend(data.get("result", []))
+        if "next" not in data or len(items) >= max_items:
+            return items
+        start = data["next"]
+        _time.sleep(0.5)
+
+
+def _bitrix_batch(cmds: dict[str, str]) -> dict[str, int]:
+    out, items = {}, list(cmds.items())
+    for i in range(0, len(items), 50):
+        chunk = dict(items[i:i + 50])
+        res = _bitrix("batch", {"halt": 0, "cmd": chunk}).get("result", {})
+        errs = res.get("result_error") or {}
+        if isinstance(errs, dict) and errs:
+            k, e = next(iter(errs.items()))
+            raise RuntimeError(f"Bitrix24 batch ({k}): {e.get('error_description', e) if isinstance(e, dict) else e}")
+        totals = res.get("result_total") or {}
+        rows = res.get("result") or {}
+        for k in chunk:
+            t = totals.get(k) if isinstance(totals, dict) else None
+            out[k] = int(t) if t is not None else len((rows.get(k) if isinstance(rows, dict) else None) or [])
+        _time.sleep(0.5)
+    return out
+
+
+LEAD_STAGES_DEFAULT = ["New", "Call 1", "Call 2", "Call 3", "Qualify", "UnQLF"]
+
+
+def lead_stage_config() -> tuple[list[str], list[str]]:
+    stages = list(secret("bitrix24", "lead_stages", LEAD_STAGES_DEFAULT))
+    closed = list(secret("bitrix24", "lead_closed_stages", ["UnQLF"]))
+    return stages, closed
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner="Đang tải Lead & Deal từ Bitrix24…")
+def load_bitrix(bitrix_ids: tuple[str, ...], d_start: date, d_end: date) -> dict[str, pd.DataFrame]:
+    t0, t1 = (t.isoformat() for t in to_dt_range(d_start, d_end))
+    deal_extra = {"CATEGORY_ID": c} if (c := secret("bitrix24", "deal_category_id")) is not None else {}
+    order = {"ID": "ASC"}
+
+    leads_new = _bitrix_list("crm.lead.list", {
+        "filter": {">=DATE_CREATE": t0, "<DATE_CREATE": t1},
+        "select": ["ID", "ASSIGNED_BY_ID", "DATE_CREATE"], "order": order})
+    deals_new = _bitrix_list("crm.deal.list", {
+        "filter": {">=DATE_CREATE": t0, "<DATE_CREATE": t1, **deal_extra},
+        "select": ["ID", "ASSIGNED_BY_ID", "DATE_CREATE"], "order": order})
+    deals_won = _bitrix_list("crm.deal.list", {
+        "filter": {"STAGE_SEMANTIC_ID": "S", ">=CLOSEDATE": t0, "<CLOSEDATE": t1, **deal_extra},
+        "select": ["ID", "ASSIGNED_BY_ID", "CLOSEDATE", "OPPORTUNITY", "CURRENCY_ID"], "order": order})
+
+    stages, _ = lead_stage_config()
+    statuses = _bitrix("crm.status.list", {"filter": {"ENTITY_ID": "STATUS"}}).get("result", [])
+    by_name = {str(x.get("NAME", "")).strip().lower(): x["STATUS_ID"] for x in statuses}
+    by_code = {str(x["STATUS_ID"]).lower(): x["STATUS_ID"] for x in statuses}
+    codes, missing = {}, []
+    for name in stages:
+        code = by_name.get(name.strip().lower()) or by_code.get(name.strip().lower())
+        if code:
+            codes[name] = code
+        else:
+            missing.append(name)
+    if missing:
+        raise KeyError(f"Không thấy stage {missing} trong Bitrix24.")
+    ids = [u for u in bitrix_ids if u]
+    cmds = {
+        f"u{uid}_{i}": "crm.lead.list?" + urlencode(
+            {"filter[ASSIGNED_BY_ID]": uid, "filter[STATUS_ID]": codes[name], "select[0]": "ID"})
+        for uid in ids for i, name in enumerate(stages)
+    }
+    totals = _bitrix_batch(cmds)
+    stage_rows = [{"bitrix_id": uid, "stage": name, "n": totals[f"u{uid}_{i}"]}
+                  for uid in ids for i, name in enumerate(stages)]
+
+    return {
+        "leads_new": _bitrix_frame(leads_new, "DATE_CREATE"),
+        "deals_new": _bitrix_frame(deals_new, "DATE_CREATE"),
+        "deals_won": _bitrix_frame(deals_won, "CLOSEDATE"),
+        "lead_stages": pd.DataFrame(stage_rows, columns=["bitrix_id", "stage", "n"]),
     }
 
 
@@ -726,7 +826,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — BỘ LỌC
+# SIDEBAR — BỘ LỌC & SYNC BITRIX
 # ════════════════════════════════════════════════════════════════════════════
 SOURCES = ["Danh sách Sale", "Bitrix24", "Google Calendar", "Gmail (recap)", "VoiceCloud"]
 DEMO = not any(configured(s) for s in ("sales", "google_sheets", "bitrix24", "voicecloud", "google_calendar",
@@ -752,28 +852,22 @@ with st.sidebar:
     d_start, d_end = period_range(mode, anchor, custom_range)
     st.caption(f"Kỳ báo cáo: **{d_start:%d/%m/%Y} → {d_end:%d/%m/%Y}**")
     sale_slot = st.container()
-    if st.button("🔄 Làm mới dữ liệu", width="stretch"):
-        st.cache_data.clear()
-        st.rerun()
-  st.divider()
+
+    st.divider()
     st.subheader("📥 Cập nhật dữ liệu Bitrix")
-    
-    # Tải file thủ công nếu muốn đè dữ liệu mới ngay
     uploaded_file = st.file_uploader("Upload file bitrix_sync_data.json", type=["json"], label_visibility="collapsed")
     if uploaded_file is not None:
         try:
             st.session_state["uploaded_bitrix_data"] = json.load(uploaded_file)
-            st.success("✅ Đã nạp dữ liệu từ file upload!")
+            st.success("✅ Đã nạp dữ liệu thành công!")
             st.cache_data.clear()
-        except Exception as e:
+        except Exception:
             st.error("File JSON không hợp lệ.")
 
-    # Hiển thị thời gian sync gần nhất
-    sync_info = load_bitrix_from_sync_file()
-    if sync_info and isinstance(sync_info, dict):
-        st.caption(f"🕒 Bitrix Sync lần cuối:\n**{sync_info.get('updated_at', 'Chưa rõ')}**")
-    else:
-        st.caption("⚠️ Chưa tìm thấy dữ liệu Bitrix Sync.")
+    if st.button("🔄 Làm mới dữ liệu", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # TẢI DỮ LIỆU
@@ -823,10 +917,14 @@ else:
     id2sale = dict(zip(roster["bitrix_id"], roster["sale"]))
     vc2sale = dict(zip(roster["vc_id"], roster["sale"]))
 
-    # Ưu tiên đọc dữ liệu Bitrix từ file sync của Bookmarklet nếu có
-    sync_bitrix = load_bitrix_from_sync_file()
-    if sync_bitrix:
-        status["Bitrix24"] = "✅ Đã sync (Bookmarklet)"
+    sync_bx = load_bitrix_from_sync_file()
+    if sync_bx:
+        status["Bitrix24"] = "✅ Đã sync (Extension/Drive)"
+        for k in ("leads_new", "deals_new", "deals_won", "lead_stages"):
+            df_k = sync_bx[k]
+            if "bitrix_id" in df_k.columns:
+                df_k["sale"] = df_k["bitrix_id"].map(id2sale)
+            data[k] = df_k.dropna(subset=["sale"]) if "sale" in df_k.columns else df_k
     elif configured("bitrix24") and not roster.empty:
         bx = attempt("Bitrix24", load_bitrix, tuple(roster["bitrix_id"]), d_start, d_end)
         if bx is not None:
@@ -869,16 +967,15 @@ with st.sidebar:
     for k in SOURCES:
         st.markdown(f"{status[k]} &nbsp; {k}")
     
-    # Hiển thị thông tin sync Bitrix từ Bookmarklet nếu có
     sync_info = load_bitrix_from_sync_file()
-    if sync_info:
-        st.caption(f"📥 Bitrix Sync lần cuối:\n**{sync_info.get('updated_at', '—')}**")
+    if sync_info and isinstance(sync_info, dict):
+        st.caption(f"🕒 Bitrix Sync lần cuối:\n**{sync_info.get('updated_at', 'Chưa rõ')}**")
     
     st.caption(f"Dữ liệu cache {CACHE_TTL // 60} phút · Cập nhật: {now:%H:%M %d/%m}")
 
 if roster.empty:
     st.title("📊 Dashboard Hiệu suất Sale")
-    st.error("Chưa có danh sách Sale. Khai báo các mục `[[sales]]` trong Secrets (xem hướng dẫn).")
+    st.error("Chưa có danh sách Sale. Khai báo các mục `[[sales]]` trong Secrets.")
     for p in problems:
         st.markdown(f"- {p}")
     st.stop()
@@ -987,21 +1084,21 @@ def page_overview():
     rate = lb["recap_done"].sum() / tot_held if tot_held else 0
     row1, row2 = st.columns(4), st.columns(4)
     row1[0].metric("💰 Doanh thu", fmt_vnd(lb["revenue"].sum()),
-                   help=f"Tổng giá trị deal Won có ngày đóng trong kỳ (Bitrix24): {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
-    row1[1].metric("🏆 Deal thắng", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ, theo ngày đóng")
-    row1[2].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ (Bitrix24)")
-    row1[3].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ (Bitrix24)")
+                   help=f"Tổng giá trị deal Won có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
+    row1[1].metric("🏆 Deal thắng", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ")
+    row1[2].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
+    row1[3].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
     row2[0].metric("📊 Doanh thu Est (Meeting)", fmt_vnd(lb["est_revenue"].sum()),
-                   help="Tổng giá trị dự kiến trích xuất từ báo giá đính kèm/trong email recap của các meeting.")
+                   help="Tổng giá trị dự kiến trích xuất từ báo giá đính kèm/trong email recap.")
     row2[1].metric("📞 Cuộc gọi", fmt_int(lb["calls"].sum()), help=f"Tổng thời lượng: {fmt_duration(lb['talk'].sum())}")
-    row2[2].metric("📅 Meeting", fmt_int(lb["meetings"].sum()), help="Meeting có khách ngoài công ty (Google Calendar)")
+    row2[2].metric("📅 Meeting", fmt_int(lb["meetings"].sum()), help="Meeting có khách ngoài công ty")
     row2[3].metric("✉️ Tỷ lệ recap", f"{rate:.0%}" if tot_held else "—",
                     help=f"Đã recap / meeting đã diễn ra. Thiếu recap: {fmt_int(lb['recap_miss'].sum())}")
 
     st.divider()
     st.subheader("🏆 Hiệu suất theo Sale")
     view = pd.DataFrame({
-        "Tên Sale": lb["sale"],
+        "Sale": lb["sale"],
         "Doanh thu (₫)": lb["revenue"],
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
@@ -1011,42 +1108,37 @@ def page_overview():
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
     })
     st.dataframe(view, hide_index=True, width="stretch", column_config={
-        "Tên Sale": st.column_config.TextColumn(pinned=True),
-        "Doanh thu (₫)": st.column_config.NumberColumn(format="localized", help="Tổng giá trị deal Won, ngày đóng trong kỳ"),
-        "Est Doanh thu": st.column_config.NumberColumn(format="localized", help="Tổng giá trị dự kiến từ báo giá trong email recap"),
-        "Thời lượng gọi": st.column_config.TextColumn(help="Tổng thời lượng, giờ:phút:giây"),
-        "Thiếu recap": st.column_config.NumberColumn(help="Meeting đã diễn ra mà chưa gửi email recap"),
-        "Tỷ lệ recap": st.column_config.TextColumn(help="Đã recap / meeting đã diễn ra."),
+        "Sale": st.column_config.TextColumn(pinned=True),
+        "Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
+        "Est Doanh thu": st.column_config.NumberColumn(format="localized"),
+        "Thời lượng gọi": st.column_config.TextColumn(),
+        "Thiếu recap": st.column_config.NumberColumn(),
+        "Tỷ lệ recap": st.column_config.TextColumn(),
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
 
 
 def page_leads():
-    st.caption(f"Số lead hiện đang nằm ở từng stage trên Bitrix24, tính tại thời điểm xem (không phụ thuộc kỳ lọc). "
-               f"Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
+    st.caption(f"Số lead hiện đang nằm ở từng stage trên Bitrix24. Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
     
     if stage_tbl.empty:
         st.info("Chưa có dữ liệu lead tồn theo stage.")
         return
 
-    # Chuẩn bị dữ liệu bảng stage từ stage_tbl
     stage_view_full = stage_tbl.loc[lb["sale"]].rename(columns={"lead_open": "Tồn"}) if "sale" in stage_tbl.index.names else stage_tbl.copy().rename(columns={"lead_open": "Tồn"})
     existing_stages = [s for s in stages if s in stage_view_full.columns]
     stage_view_full["Tổng"] = stage_view_full[existing_stages].sum(axis=1)
     
-    # Đưa index về cột và đổi tên duy nhất thành "Sale"
     stage_view_full = stage_view_full.reset_index()
     if "index" in stage_view_full.columns:
         stage_view_full = stage_view_full.rename(columns={"index": "Sale"})
     elif "sale" in stage_view_full.columns:
         stage_view_full = stage_view_full.rename(columns={"sale": "Sale"})
         
-    # Loại bỏ các cột trùng tên nếu có
     stage_view_full = stage_view_full.loc[:, ~stage_view_full.columns.duplicated()]
 
-    # Bộ lọc theo Sale
-    col_f1, col_f2 = st.columns([1, 2])
+    col_f1, _ = st.columns([1, 2])
     all_sales_in_leads = ["Tất cả"] + sorted(stage_view_full["Sale"].unique().tolist())
     selected_sale_lead = col_f1.selectbox("🔍 Lọc theo Sale", all_sales_in_leads, key="lead_sale_filter")
     
@@ -1056,7 +1148,6 @@ def page_leads():
         
     filtered_stage_df = filtered_stage_df.sort_values("Tồn", ascending=False)
     
-    # Tính dòng TỔNG khi chọn "Tất cả"
     if selected_sale_lead == "Tất cả" and len(filtered_stage_df) > 1:
         num_cols = filtered_stage_df.select_dtypes(include=[np.number]).columns
         sum_row = filtered_stage_df[num_cols].sum().to_frame().T
@@ -1083,14 +1174,16 @@ def page_leads():
         file_name=f"lead_ton_theo_stage_{now:%Y%m%d}.csv", 
         mime="text/csv"
     )
+
+
 def page_meetings():
     k = st.columns(5)
     k[0].metric("📅 Meeting", fmt_int(lb["meetings"].sum()))
     k[1].metric("✅ Đã recap", fmt_int(lb["recap_done"].sum()))
-    k[2].metric("❌ Thiếu recap", fmt_int(lb["recap_miss"].sum()), help="Chưa có email recap tính tới hiện tại")
+    k[2].metric("❌ Thiếu recap", fmt_int(lb["recap_miss"].sum()))
     tot = int(held.sum())
     k[3].metric("✉️ Tỷ lệ recap", f"{lb['recap_done'].sum() / tot:.0%}" if tot else "—")
-    k[4].metric("💰 Tổng Est", fmt_vnd(mt["est_amount"].sum()), help="Tổng giá trị ước tính từ báo giá gửi kèm email recap")
+    k[4].metric("💰 Tổng Est", fmt_vnd(mt["est_amount"].sum()))
     
     order = [ST_DONE, ST_MISS, ST_UPCOMING, ST_UNKNOWN]
     present = [s for s in order if st_counts.get(s, pd.Series(dtype=int)).sum() > 0]
@@ -1106,19 +1199,12 @@ def page_meetings():
             color_discrete_map=STATUS_COLORS, category_orders={"Trạng thái": present},
             labels={"sale": "", "Số meeting": "Số lượng", "Trạng thái": ""}
         )
-        fig.update_traces(
-            marker=dict(line=dict(width=0)),
-            hovertemplate="<b>%{y}</b><br>%{fullData.name}: <b>%{x}</b> meeting<extra></extra>"
-        )
+        fig.update_traces(marker=dict(line=dict(width=0)), hovertemplate="<b>%{y}</b><br>%{fullData.name}: <b>%{x}</b> meeting<extra></extra>")
         fig.update_layout(
-            height=chart_height,
-            margin=dict(l=10, r=20, t=20, b=10),
-            barmode="stack", 
-            bargap=0.4,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
+            height=chart_height, margin=dict(l=10, r=20, t=20, b=10),
+            barmode="stack", bargap=0.4, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None, font=dict(size=12)),
-            xaxis=dict(showgrid=True, gridcolor="rgba(200, 200, 200, 0.2)", dtick=max(1, int(np.ceil(lb["meetings"].max() / 6))), zeroline=False),
+            xaxis=dict(showgrid=True, gridcolor="rgba(200, 200, 200, 0.2)", zeroline=False),
             yaxis=dict(showgrid=False, categoryorder="total ascending")
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -1142,77 +1228,52 @@ def page_meetings():
             hide_index=True, width="stretch",
             column_config={
                 "Thời gian": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
-                "Thời gian gửi recap sau meeting": st.column_config.TextColumn(help="Khoảng thời gian từ lúc kết thúc meeting đến khi gửi email recap"),
-                "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized", help="Giá trị trích xuất từ báo giá gửi trong email recap"),
+                "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
             },
         )
-        if not gmail_on:
-            st.caption("Chưa cấu hình Gmail nên chưa kiểm tra được recap.")
 
 
 def page_all_recap_emails():
     st.subheader("📬 Danh sách tất cả email recap đọc từ Gmail")
-    st.caption("Liệt kê toàn bộ các email recap thu thập được trong kỳ lọc, hỗ trợ mở trực tiếp hộp thư Gmail.")
-    
     if raw_emails_df is None or raw_emails_df.empty:
-        st.info("Chưa có email recap nào được tìm thấy trong khoảng thời gian này.")
+        st.info("Chưa có email recap nào được tìm thấy.")
         return
         
     email2sale = dict(zip(roster["email"], roster["sale"])) if not roster.empty else {}
-    
     rows = []
     for em in raw_emails_df.itertuples():
         s_email = str(em.sender).lower()
         sale_name = email2sale.get(s_email, s_email)
-        
         msg_id = getattr(em, "message_id", "")
         link = f"https://mail.google.com/mail/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
-        
         rows.append({
             "Ngày gửi recap": em.ts.tz_localize(None) if not pd.isna(em.ts) else None,
-            "Tên sale": sale_name,
+            "Sale": sale_name,
             "Tiêu đề mail recap": em.subject,
             "Estimate doanh thu": em.est_amount,
             "Mở recap": link
         })
         
     df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
-    
     col_f1, col_f2 = st.columns([1, 2])
-    all_sales_in_data = ["Tất cả"] + sorted(df_display["Tên sale"].unique().tolist())
-    selected_sale_filter = col_f1.selectbox("🔍 Lọc theo Tên Sale", all_sales_in_data)
-    keyword_search = col_f2.text_input("🔎 Tìm kiếm theo từ khóa tiêu đề mail", placeholder="Nhập từ khóa (vd: Haravan, Báo giá, ...)")
+    all_sales_in_data = ["Tất cả"] + sorted(df_display["Sale"].unique().tolist())
+    selected_sale_filter = col_f1.selectbox("🔍 Lọc theo Sale", all_sales_in_data)
+    keyword_search = col_f2.text_input("🔎 Tìm kiếm từ khóa tiêu đề mail", placeholder="Nhập từ khóa...")
     
     filtered_df = df_display.copy()
     if selected_sale_filter != "Tất cả":
-        filtered_df = filtered_df[filtered_df["Tên sale"] == selected_sale_filter]
-        
+        filtered_df = filtered_df[filtered_df["Sale"] == selected_sale_filter]
     if keyword_search.strip():
-        kw_lower = keyword_search.strip().lower()
-        filtered_df = filtered_df[filtered_df["Tiêu đề mail recap"].str.lower().str.contains(kw_lower, na=False)]
+        filtered_df = filtered_df[filtered_df["Tiêu đề mail recap"].str.lower().str.contains(keyword_search.strip().lower(), na=False)]
     
-    st.markdown(f"Hiển thị **{len(filtered_df)}** / {len(df_display)} email recap")
-    
-    st.dataframe(
-        filtered_df,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Ngày gửi recap": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
-            "Estimate doanh thu": st.column_config.NumberColumn(format="localized"),
-            "Mở recap": st.column_config.LinkColumn("Mở recap", display_text="🔗 Xem chi tiết mail")
-        }
-    )
-    st.download_button(
-        "⬇️ Tải danh sách email recap (CSV)", 
-        filtered_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"danh_sach_email_recap_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", 
-        mime="text/csv"
-    )
+    st.dataframe(filtered_df, hide_index=True, width="stretch", column_config={
+        "Ngày gửi recap": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
+        "Estimate doanh thu": st.column_config.NumberColumn(format="localized"),
+        "Mở recap": st.column_config.LinkColumn("Mở recap", display_text="🔗 Xem chi tiết mail")
+    })
 
 
 def page_trends():
-    st.caption("Theo giờ khi xem 1 ngày, theo ngày khi xem nhiều ngày.")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**📞 Số cuộc gọi**")
@@ -1222,34 +1283,6 @@ def page_trends():
         st.plotly_chart(trend_chart(trend(mt), COLOR_MEETINGS, "Meeting"), width="stretch")
 
 
-def page_google_connect():
-    c = dict(secret("google_oauth") or {})
-    st.markdown(
-        "Trang dành cho **leader**: đăng nhập Google 1 lần để dashboard đọc lịch (meeting) và hộp thư "
-        "(email recap mà Sale CC cho leader). Quyền chỉ đọc.")
-    if leader_mode():
-        st.success(f"Đang kết nối với hộp thư của leader {c.get('leader_email', '')}.")
-    st.markdown("**Bước 1.** Bấm nút đăng nhập Google bằng tài khoản leader.")
-    st.link_button("🔑 Đăng nhập Google (leader)", oauth_login_url(), type="primary")
-    st.markdown("**Bước 2.** Copy toàn bộ địa chỉ trên thanh địa chỉ (bắt đầu bằng `http://localhost`) dán vào ô dưới:")
-    pasted = st.text_input("Địa chỉ trang lỗi", placeholder="http://localhost/?code=4/0Ab...", label_visibility="collapsed")
-    code = extract_code(pasted) if pasted else st.query_params.get("code", "")
-    if not code:
-        return
-    cache = st.session_state.setdefault("oauth_results", {})
-    if code not in cache:
-        try:
-            cache[code] = oauth_exchange(code)
-        except Exception as e:
-            cache[code] = {"error": type(e).__name__, "error_description": str(e)}
-    tok = cache[code]
-    if "refresh_token" not in tok:
-        st.error(f"Không lấy được mã kết nối: {tok.get('error_description') or tok.get('error') or tok}.")
-        return
-    st.markdown(f"**Bước 3.** Đã kết nối tài khoản **{tok.get('email')}**. Copy dòng dưới dán vào Secrets:")
-    st.code(f'refresh_token = "{tok["refresh_token"]}"', language="toml")
-
-
 pages = {"Báo cáo": [
     st.Page(page_overview, title="Tổng quan", icon="📊", default=True),
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
@@ -1257,22 +1290,20 @@ pages = {"Báo cáo": [
     st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
     st.Page(page_trends, title="Xu hướng hoạt động", icon="📈", url_path="xu-huong"),
 ]}
-if configured("google_oauth"):
-    pages["Cài đặt"] = [st.Page(page_google_connect, title="Kết nối Google", icon="🔑", url_path="ket-noi-google")]
 pg = st.navigation(pages, position="sidebar", expanded=True)
 
 st.title(f"{pg.icon} {pg.title}")
 who = ", ".join(picked) if picked and len(picked) <= 3 else f"{len(sales_in_view)} Sale"
 st.caption(f"Kỳ: **{mode}** · {d_start:%d/%m/%Y} – {d_end:%d/%m/%Y} · **{who}**")
 if DEMO:
-    st.info("🧪 **Chế độ DEMO** — đang hiển thị dữ liệu giả định cùng thời gian trễ recap mẫu.", icon="ℹ️")
+    st.info("🧪 **Chế độ DEMO** — đang hiển thị dữ liệu giả định.", icon="ℹ️")
 if problems:
-    with st.expander(f"⚠️ {len(problems)} vấn đề khi tải dữ liệu — bấm để xem"):
+    with st.expander(f"⚠️ {len(problems)} vấn đề khi tải dữ liệu"):
         for p in problems:
             st.markdown(f"- {p}")
 
 pg.run()
 
 st.divider()
-st.caption("Nguồn: Bitrix24 (Lead, Deal, Doanh thu) · VoiceCloud · Google Calendar · Gmail (Báo giá/Estimate & Recap delay)")
+st.caption("Nguồn: Bitrix24 · VoiceCloud · Google Calendar · Gmail")
 st.caption("Dashboard created by Khanh Ngoc Ninh")
