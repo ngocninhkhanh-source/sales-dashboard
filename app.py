@@ -546,7 +546,6 @@ def load_recap_emails(emails: tuple[str, ...], d_start: date, d_end: date, leade
     subj = " subject:(" + " OR ".join(f'"{k}"' for k in kws) + ")" if kws else ""
     cc = str(cfg.get("recap_cc", "")).strip().lower()
     t0, _ = to_dt_range(d_start, d_end)
-    # Lấy email đến thời điểm hiện tại (bỏ giới hạn t1 + 48h cũ)
     t1_now = datetime.now(TZ) + timedelta(hours=1)
     
     rows, errors, svc = [], [], None
@@ -605,7 +604,6 @@ def title_name_tokens(title: str) -> set[str]:
 
 
 def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
-    """Gán email recap cho từng meeting. Miễn là gửi TỪ LÚC MEETING BẮT ĐẦU cho tới HIỆN TẠI."""
     g = dict(secret("gmail") or {})
     ways = list(g.get("match_by", ["guest_email", "title_name"]))
     out = []
@@ -613,7 +611,6 @@ def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
     for r in meetings.itertuples():
         found, how, amount, time_diff_str = None, "", 0.0, "—"
         if r.end <= now_dt and not emails.empty:
-            # Lấy các email gửi từ khi bắt đầu meeting trở về sau (bỏ giới hạn window 48h)
             c = emails[(emails["sender"] == str(r.email).lower()) & (emails["ts"] >= r.ts)]
             guests = {x.strip() for x in str(r.guests).split(",") if x.strip()}
             name = title_name_tokens(r.title)
@@ -737,7 +734,6 @@ def demo_data(d_start: date, d_end: date) -> dict:
     meetings["recap_by"] = np.where(meetings["recap"], "tên trong tiêu đề", "")
     meetings["est_amount"] = np.where(meetings["recap"], rng.integers(1, 20, len(meetings)) * 10000000.0, 0.0)
     
-    # Sinh dữ liệu thời gian recap trễ giả lập
     delays = [fmt_time_delta(timedelta(minutes=int(m))) for m in rng.integers(15, 2800, len(meetings))]
     meetings["recap_delay_str"] = np.where(meetings["recap"], delays, "—")
 
