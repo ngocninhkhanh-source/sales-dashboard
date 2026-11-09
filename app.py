@@ -5,16 +5,12 @@ Nguồn dữ liệu:
   • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal thắng, Doanh thu (tổng giá trị deal thắng)
   • VoiceCloud      : số cuộc gọi & thời lượng gọi
   • Google Calendar : số Meeting với khách
-  • Gmail           : với TỪNG meeting, kiểm tra Sale đã gửi email recap cho khách chưa + Estimate doanh thu từ báo giá
+  • Gmail           : kiểm tra email recap (không giới hạn 48h) + Estimate doanh thu từ báo giá
 
 Google có 2 cách kết nối:
   A. CHẾ ĐỘ LEADER (khuyên dùng, không cần IT): Sale CC leader vào lời mời meeting và email recap
      → app chỉ đọc lịch + hộp thư của leader. Leader đăng nhập Google 1 lần ở trang "🔑 Kết nối Google".
   B. Service account + Domain-wide delegation (cần Super Admin Google Workspace).
-
-Thông tin bí mật đặt trong `.streamlit/secrets.toml` (chạy local) hoặc ô "Secrets"
-trên Streamlit Community Cloud — KHÔNG commit lên GitHub.
-Chưa có secrets → app chạy CHẾ ĐỘ DEMO với dữ liệu giả.
 """
 
 from __future__ import annotations
@@ -36,17 +32,17 @@ import streamlit as st
 # CẤU HÌNH CHUNG
 # ════════════════════════════════════════════════════════════════════════════
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-CACHE_TTL = 600  # giây — cache dữ liệu API 10 phút để tránh vượt giới hạn gọi API
+CACHE_TTL = 600  # giây — cache dữ liệu API 10 phút
 
 COLOR_CALLS = "#2a78d6"
 COLOR_MEETINGS = "#eb6834"
 
-# Trạng thái recap của một meeting → màu trạng thái (luôn đi kèm biểu tượng + chữ)
-ST_DONE, ST_WAIT, ST_MISS, ST_UPCOMING, ST_UNKNOWN = (
-    "✅ Đã recap", "⏳ Chờ recap", "❌ Thiếu recap", "🗓️ Chưa diễn ra", "— Chưa kiểm tra",
+# Trạng thái recap
+ST_DONE, ST_MISS, ST_UPCOMING, ST_UNKNOWN = (
+    "✅ Đã recap", "❌ Thiếu recap", "🗓️ Chưa diễn ra", "— Chưa kiểm tra",
 )
 STATUS_COLORS = {
-    ST_DONE: "#0ca30c", ST_WAIT: "#fab219", ST_MISS: "#d03b3b",
+    ST_DONE: "#0ca30c", ST_MISS: "#d03b3b",
     ST_UPCOMING: "#b4b2a9", ST_UNKNOWN: "#d9d8d2",
 }
 
@@ -57,7 +53,6 @@ st.set_page_config(page_title="Dashboard Hiệu suất Sale", page_icon="📊", 
 # TIỆN ÍCH
 # ════════════════════════════════════════════════════════════════════════════
 def secret(section: str, key: str | None = None, default=None):
-    """Đọc st.secrets an toàn — không lỗi khi chưa có file secrets."""
     try:
         if section not in st.secrets:
             return default
@@ -76,7 +71,6 @@ def fmt_int(x) -> str:
 
 
 def fmt_vnd(x: float) -> str:
-    """Định dạng gọn: 1,25 tỷ / 350,4 tr / 12.500 ₫."""
     x = float(x or 0)
     swap = lambda t: t.replace(",", "X").replace(".", ",").replace("X", ".")
     if abs(x) >= 1e9:
@@ -93,8 +87,33 @@ def fmt_duration(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
+def fmt_time_delta(td: timedelta | float) -> str:
+    """Định dạng thời gian chênh lệch từ meeting_end tới recap_time dạng tiếng Việt."""
+    if pd.isna(td) or td is None:
+        return "—"
+    if isinstance(td, (int, float)):
+        td = timedelta(seconds=td)
+    
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 0:
+        return "Gửi trước khi kết thúc"
+    
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days} ngày")
+    if hours > 0:
+        parts.append(f"{hours} giờ")
+    if minutes > 0 or not parts:
+        parts.append(f"{minutes} phút")
+        
+    return " ".join(parts)
+
+
 def period_range(mode: str, anchor: date, custom_range: tuple[date, date] | None = None) -> tuple[date, date]:
-    """Tính toán khoảng ngày bắt đầu và kết thúc dựa trên chế độ lọc."""
     if mode == "Tùy chọn khoảng ngày":
         if custom_range and len(custom_range) == 2:
             return custom_range[0], custom_range[1]
@@ -127,7 +146,6 @@ def period_range(mode: str, anchor: date, custom_range: tuple[date, date] | None
 
 
 def to_dt_range(d_start: date, d_end: date) -> tuple[datetime, datetime]:
-    """[00:00 ngày đầu, 00:00 ngày sau ngày cuối) theo giờ Việt Nam."""
     return (datetime.combine(d_start, time.min, TZ),
             datetime.combine(d_end + timedelta(days=1), time.min, TZ))
 
@@ -138,7 +156,7 @@ def clean_id(v) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# MẬT KHẨU (tuỳ chọn: app_password trong secrets)
+# MẬT KHẨU
 # ════════════════════════════════════════════════════════════════════════════
 def check_password() -> bool:
     try:
@@ -163,7 +181,7 @@ if not check_password():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ĐĂNG NHẬP GOOGLE CỦA LEADER (OAuth)
+# ĐĂNG NHẬP GOOGLE LEADER (OAuth)
 # ════════════════════════════════════════════════════════════════════════════
 OAUTH_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly",
                 "https://www.googleapis.com/auth/gmail.readonly"]
@@ -353,7 +371,7 @@ def load_bitrix(bitrix_ids: tuple[str, ...], d_start: date, d_end: date) -> dict
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# NGUỒN 2 — GOOGLE CALENDAR + GMAIL (Bổ sung trích xuất Estimate Doanh thu)
+# NGUỒN 2 — GOOGLE CALENDAR + GMAIL
 # ════════════════════════════════════════════════════════════════════════════
 def _google_service(api: str, version: str, scopes: list[str], subject: str | None = None):
     from google.oauth2 import service_account
@@ -481,7 +499,6 @@ def load_meetings(emails: tuple[str, ...], sales: tuple[str, ...], d_start: date
 
 
 def extract_estimate_amount(text: str) -> float:
-    """Trích xuất giá trị tiền tệ (báo giá/estimate) từ tiêu đề hoặc nội dung tóm tắt email."""
     if not text:
         return 0.0
     patterns = [
@@ -522,12 +539,16 @@ def extract_estimate_amount(text: str) -> float:
 @st.cache_data(ttl=CACHE_TTL, show_spinner="Đang tải email recap từ Gmail…")
 def load_recap_emails(emails: tuple[str, ...], d_start: date, d_end: date, leader: bool = False) -> pd.DataFrame:
     cfg = dict(secret("gmail") or {})
-    window = timedelta(hours=int(cfg.get("recap_window_hours", 48)))
-    kws = [k for k in cfg.get("subject_keywords", []) if k]
+    default_kws = ["haravan", "đề xuất", "recap"]
+    user_kws = [k for k in cfg.get("subject_keywords", []) if k]
+    kws = list(set(user_kws + default_kws))
+    
     subj = " subject:(" + " OR ".join(f'"{k}"' for k in kws) + ")" if kws else ""
     cc = str(cfg.get("recap_cc", "")).strip().lower()
-    t0, t1 = to_dt_range(d_start, d_end)
-    t1 = min(t1 + window, datetime.now(TZ) + timedelta(hours=1))
+    t0, _ = to_dt_range(d_start, d_end)
+    # Lấy email đến thời điểm hiện tại (bỏ giới hạn t1 + 48h cũ)
+    t1_now = datetime.now(TZ) + timedelta(hours=1)
+    
     rows, errors, svc = [], [], None
     for email in emails:
         if not email:
@@ -541,7 +562,7 @@ def load_recap_emails(emails: tuple[str, ...], d_start: date, d_end: date, leade
             parts = [f"from:{email}" if leader else "in:sent"]
             if cc and cc != email.lower():
                 parts.append(f"cc:{cc}")
-            q = " ".join(parts + [f"after:{int(t0.timestamp())}", f"before:{int(t1.timestamp())}"]) + subj
+            q = " ".join(parts + [f"after:{int(t0.timestamp())}", f"before:{int(t1_now.timestamp())}"]) + subj
             ids, token = [], None
             while len(ids) < 500:
                 res = s_.users().messages().list(userId="me", q=q, maxResults=100, pageToken=token).execute()
@@ -556,7 +577,6 @@ def load_recap_emails(emails: tuple[str, ...], d_start: date, d_end: date, leade
                 snippet = m.get("snippet", "")
                 subject_text = h.get("subject", "")
                 combined_text = subject_text + " " + snippet
-                
                 est_amount = extract_estimate_amount(combined_text)
                 
                 rcpt = re.findall(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+", (h.get("to", "") + "," + h.get("cc", "")).lower())
@@ -585,27 +605,34 @@ def title_name_tokens(title: str) -> set[str]:
 
 
 def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
+    """Gán email recap cho từng meeting. Miễn là gửi TỪ LÚC MEETING BẮT ĐẦU cho tới HIỆN TẠI."""
     g = dict(secret("gmail") or {})
-    window = timedelta(hours=int(g.get("recap_window_hours", 48)))
     ways = list(g.get("match_by", ["guest_email", "title_name"]))
     out = []
+    now_dt = datetime.now(TZ)
     for r in meetings.itertuples():
-        found, how, amount = None, "", 0.0
-        if r.end <= datetime.now(TZ) and not emails.empty:
-            c = emails[(emails["sender"] == str(r.email).lower()) & (emails["ts"] >= r.ts) & (emails["ts"] <= r.end + window)]
+        found, how, amount, time_diff_str = None, "", 0.0, "—"
+        if r.end <= now_dt and not emails.empty:
+            # Lấy các email gửi từ khi bắt đầu meeting trở về sau (bỏ giới hạn window 48h)
+            c = emails[(emails["sender"] == str(r.email).lower()) & (emails["ts"] >= r.ts)]
             guests = {x.strip() for x in str(r.guests).split(",") if x.strip()}
             name = title_name_tokens(r.title)
             for e in c.sort_values("ts").itertuples():
-                if "guest_email" in ways and guests & set(e.rcpt.split(",")):
-                    found, how, amount = e, "email khách", e.est_amount
+                if ("guest_email" in ways and guests & set(e.rcpt.split(","))) or \
+                   ("title_name" in ways and name and name <= set(tokens(e.subject))):
+                    found, how, amount = e, ("email khách" if "guest_email" in ways else "tên tiêu đề"), e.est_amount
+                    time_diff = e.ts - r.end
+                    time_diff_str = fmt_time_delta(time_diff)
                     break
-                if "title_name" in ways and name and name <= set(tokens(e.subject)):
-                    found, how, amount = e, "tên trong tiêu đề", e.est_amount
-                    break
-        out.append({"event_id": r.event_id, "recap": found is not None,
-                    "recap_subject": found.subject if found is not None else "", "recap_by": how,
-                    "est_amount": amount})
-    return pd.DataFrame(out, columns=["event_id", "recap", "recap_subject", "recap_by", "est_amount"])
+        out.append({
+            "event_id": r.event_id, 
+            "recap": found is not None,
+            "recap_subject": found.subject if found is not None else "", 
+            "recap_by": how, 
+            "est_amount": amount,
+            "recap_delay_str": time_diff_str
+        })
+    return pd.DataFrame(out, columns=["event_id", "recap", "recap_subject", "recap_by", "est_amount", "recap_delay_str"])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -709,6 +736,10 @@ def demo_data(d_start: date, d_end: date) -> dict:
     meetings["recap_subject"] = np.where(meetings["recap"], "Haravan gửi recap – " + pd.Series(client).values, "")
     meetings["recap_by"] = np.where(meetings["recap"], "tên trong tiêu đề", "")
     meetings["est_amount"] = np.where(meetings["recap"], rng.integers(1, 20, len(meetings)) * 10000000.0, 0.0)
+    
+    # Sinh dữ liệu thời gian recap trễ giả lập
+    delays = [fmt_time_delta(timedelta(minutes=int(m))) for m in rng.integers(15, 2800, len(meetings))]
+    meetings["recap_delay_str"] = np.where(meetings["recap"], delays, "—")
 
     calls = _demo_events(rng, w, days, 22)
     calls["duration"] = rng.gamma(2.0, 70, len(calls)).round()
@@ -767,7 +798,7 @@ data = {
     "deals_new": pd.DataFrame(columns=["ts", "sale"]),
     "deals_won": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "meetings": pd.DataFrame(columns=["event_id", "sale", "email", "ts", "end", "title", "guests", "recap",
-                                      "recap_subject", "recap_by", "est_amount"]),
+                                      "recap_subject", "recap_by", "est_amount", "recap_delay_str"]),
     "calls": pd.DataFrame(columns=["ts", "sale", "duration"]),
 }
 
@@ -815,7 +846,7 @@ else:
         m = attempt("Google Calendar", load_meetings_leader if g_leader else load_meetings,
                     tuple(roster["email"]), tuple(roster["sale"]), d_start, d_end)
         if m is not None:
-            data["meetings"] = m.assign(recap=pd.NA, est_amount=0.0)
+            data["meetings"] = m.assign(recap=pd.NA, est_amount=0.0, recap_delay_str="—")
 
     gmail_on = g_leader or (configured("gmail") and configured("gcp_service_account"))
     mt = data["meetings"]
@@ -825,7 +856,7 @@ else:
               else pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount"]))
         if em is not None:
             rc = match_recaps(mt, em)
-            data["meetings"] = mt.drop(columns=["recap", "est_amount"]).merge(rc, on="event_id", how="left")
+            data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str"], errors="ignore").merge(rc, on="event_id", how="left")
             status.setdefault("Gmail (recap)", "✅ Đã kết nối")
 
     if configured("voicecloud") and not roster.empty:
@@ -861,23 +892,6 @@ for k in data:
 # ════════════════════════════════════════════════════════════════════════════
 # TRẠNG THÁI RECAP CỦA TỪNG MEETING
 # ════════════════════════════════════════════════════════════════════════════
-window_h = int(secret("gmail", "recap_window_hours", 48))
-
-
-def recap_rule_text() -> str:
-    g = dict(secret("gmail") or {})
-    rules = ["Sale phụ trách gửi email"]
-    if g.get("recap_cc"):
-        rules.append(f"có CC {g['recap_cc']}")
-    if g.get("subject_keywords"):
-        rules.append("tiêu đề chứa " + " hoặc ".join(f"“{k}”" for k in g["subject_keywords"]))
-    rules.append(f"trong {window_h} giờ sau meeting")
-    ways = {"guest_email": "gửi tới email khách của meeting",
-            "title_name": "tên trong tiêu đề lịch có trong tiêu đề email"}
-    m = [ways[w] for w in g.get("match_by", ["guest_email", "title_name"]) if w in ways]
-    return ", ".join(rules) + ", và khớp 1 trong: " + " HOẶC ".join(m) + "."
-
-
 mt = data["meetings"].copy()
 
 
@@ -888,7 +902,7 @@ def recap_status(r) -> str:
         return ST_UNKNOWN
     if bool(r["recap"]):
         return ST_DONE
-    return ST_WAIT if now <= r["end"] + timedelta(hours=window_h) else ST_MISS
+    return ST_MISS
 
 
 mt["status"] = mt.apply(recap_status, axis=1) if not mt.empty else pd.Series(dtype=str)
@@ -924,13 +938,13 @@ lb = (
     .merge(data["calls"].groupby("sale").agg(calls=("duration", "size"), talk=("duration", "sum")), on="sale", how="left")
     .merge(count(mt, "meetings"), on="sale", how="left")
     .merge(mt.groupby("sale")["est_amount"].sum().rename("est_revenue"), on="sale", how="left")
-    .merge(st_counts[[ST_DONE, ST_WAIT, ST_MISS]].rename(columns={ST_DONE: "recap_done", ST_WAIT: "recap_wait", ST_MISS: "recap_miss"}),
+    .merge(st_counts[[ST_DONE, ST_MISS]].rename(columns={ST_DONE: "recap_done", ST_MISS: "recap_miss"}),
            left_on="sale", right_index=True, how="left")
     .fillna(0)
 )
-int_cols = ["leads_new", "lead_open", "deals_new", "deals_won", "calls", "meetings", "recap_done", "recap_wait", "recap_miss"]
+int_cols = ["leads_new", "lead_open", "deals_new", "deals_won", "calls", "meetings", "recap_done", "recap_miss"]
 lb[int_cols] = lb[int_cols].astype(int)
-held = lb["recap_done"] + lb["recap_wait"] + lb["recap_miss"]
+held = lb["recap_done"] + lb["recap_miss"]
 lb["recap_rate"] = lb["recap_done"] / held.replace(0, np.nan)
 lb = lb.sort_values(["revenue", "deals_won", "deals_new"], ascending=False).reset_index(drop=True)
 
@@ -983,8 +997,7 @@ def page_overview():
     row2[1].metric("📞 Cuộc gọi", fmt_int(lb["calls"].sum()), help=f"Tổng thời lượng: {fmt_duration(lb['talk'].sum())}")
     row2[2].metric("📅 Meeting", fmt_int(lb["meetings"].sum()), help="Meeting có khách ngoài công ty (Google Calendar)")
     row2[3].metric("✉️ Tỷ lệ recap", f"{rate:.0%}" if tot_held else "—",
-                    help=f"Đã recap / meeting đã diễn ra. Thiếu recap: {fmt_int(lb['recap_miss'].sum())} · "
-                         f"Đang chờ (trong {window_h} giờ): {fmt_int(lb['recap_wait'].sum())}")
+                    help=f"Đã recap / meeting đã diễn ra. Thiếu recap: {fmt_int(lb['recap_miss'].sum())}")
 
     st.divider()
     st.subheader("🏆 Hiệu suất theo Sale")
@@ -1003,8 +1016,8 @@ def page_overview():
         "Doanh thu (₫)": st.column_config.NumberColumn(format="localized", help="Tổng giá trị deal Won, ngày đóng trong kỳ"),
         "Est Doanh thu": st.column_config.NumberColumn(format="localized", help="Tổng giá trị dự kiến từ báo giá trong email recap"),
         "Thời lượng gọi": st.column_config.TextColumn(help="Tổng thời lượng, giờ:phút:giây"),
-        "Thiếu recap": st.column_config.NumberColumn(help=f"Meeting đã qua {window_h} giờ mà chưa có email recap"),
-        "Tỷ lệ recap": st.column_config.TextColumn(help="Đã recap / meeting đã diễn ra. — = chưa có meeting nào diễn ra"),
+        "Thiếu recap": st.column_config.NumberColumn(help="Meeting đã diễn ra mà chưa gửi email recap"),
+        "Tỷ lệ recap": st.column_config.TextColumn(help="Đã recap / meeting đã diễn ra."),
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
@@ -1030,16 +1043,15 @@ def page_leads():
 
 
 def page_meetings():
-    k = st.columns(6)
+    k = st.columns(5)
     k[0].metric("📅 Meeting", fmt_int(lb["meetings"].sum()))
     k[1].metric("✅ Đã recap", fmt_int(lb["recap_done"].sum()))
-    k[2].metric("⏳ Chờ recap", fmt_int(lb["recap_wait"].sum()), help=f"Đã kết thúc, còn trong hạn {window_h} giờ")
-    k[3].metric("❌ Thiếu recap", fmt_int(lb["recap_miss"].sum()), help=f"Quá {window_h} giờ chưa có email recap")
+    k[2].metric("❌ Thiếu recap", fmt_int(lb["recap_miss"].sum()), help="Chưa có email recap tính tới hiện tại")
     tot = int(held.sum())
-    k[4].metric("✉️ Tỷ lệ recap", f"{lb['recap_done'].sum() / tot:.0%}" if tot else "—")
-    k[5].metric("💰 Tổng Est", fmt_vnd(mt["est_amount"].sum()), help="Tổng giá trị ước tính từ báo giá gửi kèm email recap")
+    k[3].metric("✉️ Tỷ lệ recap", f"{lb['recap_done'].sum() / tot:.0%}" if tot else "—")
+    k[4].metric("💰 Tổng Est", fmt_vnd(mt["est_amount"].sum()), help="Tổng giá trị ước tính từ báo giá gửi kèm email recap")
     
-    order = [ST_DONE, ST_WAIT, ST_MISS, ST_UPCOMING, ST_UNKNOWN]
+    order = [ST_DONE, ST_MISS, ST_UPCOMING, ST_UNKNOWN]
     present = [s for s in order if st_counts.get(s, pd.Series(dtype=int)).sum() > 0]
     if mt.empty:
         st.caption("Không có meeting nào trong kỳ.")
@@ -1059,7 +1071,7 @@ def page_meetings():
 
         st.markdown("**📋 Chi tiết từng meeting**")
         pick = st.pills("Lọc trạng thái", present, selection_mode="multi",
-                        default=[s for s in (ST_MISS, ST_WAIT) if s in present] or present, label_visibility="collapsed")
+                        default=[s for s in (ST_MISS, ST_DONE) if s in present] or present, label_visibility="collapsed")
         detail = mt[mt["status"].isin(pick or present)].sort_values("ts", ascending=False)
         st.dataframe(
             pd.DataFrame({
@@ -1069,19 +1081,19 @@ def page_meetings():
                 "Khách": detail["guests"], 
                 "Trạng thái recap": detail["status"],
                 "Email recap": detail.get("recap_subject", pd.Series("", index=detail.index)).fillna(""),
+                "Thời gian gửi recap sau meeting": detail.get("recap_delay_str", pd.Series("—", index=detail.index)),
                 "Est Doanh thu (₫)": detail.get("est_amount", pd.Series(0, index=detail.index)),
                 "Khớp theo": detail.get("recap_by", pd.Series("", index=detail.index)).fillna(""),
             }),
             hide_index=True, width="stretch",
             column_config={
                 "Thời gian": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
+                "Thời gian gửi recap sau meeting": st.column_config.TextColumn(help="Khoảng thời gian từ lúc kết thúc meeting đến khi gửi email recap"),
                 "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized", help="Giá trị trích xuất từ báo giá gửi trong email recap"),
             },
         )
         if not gmail_on:
             st.caption("Chưa cấu hình Gmail nên chưa kiểm tra được recap.")
-        else:
-            st.caption("Đã recap = " + recap_rule_text())
 
 
 def page_trends():
@@ -1137,7 +1149,7 @@ st.title(f"{pg.icon} {pg.title}")
 who = ", ".join(picked) if picked and len(picked) <= 3 else f"{len(sales_in_view)} Sale"
 st.caption(f"Kỳ: **{mode}** · {d_start:%d/%m/%Y} – {d_end:%d/%m/%Y} · **{who}**")
 if DEMO:
-    st.info("🧪 **Chế độ DEMO** — chưa có cấu hình Secrets nên đang hiển thị dữ liệu giả kèm estimate doanh thu mẫu.", icon="ℹ️")
+    st.info("🧪 **Chế độ DEMO** — đang hiển thị dữ liệu giả định cùng thời gian trễ recap mẫu.", icon="ℹ️")
 if problems:
     with st.expander(f"⚠️ {len(problems)} vấn đề khi tải dữ liệu — bấm để xem"):
         for p in problems:
@@ -1146,4 +1158,5 @@ if problems:
 pg.run()
 
 st.divider()
-st.caption("Nguồn: Bitrix24 (Lead, Deal, Doanh thu) · VoiceCloud · Google Calendar · Gmail (Báo giá/Estimate)")
+st.caption("Nguồn: Bitrix24 (Lead, Deal, Doanh thu) · VoiceCloud · Google Calendar · Gmail (Báo giá/Estimate & Recap delay)")
+st.caption(Dashboard created by Khanh Ngoc Ninh)
