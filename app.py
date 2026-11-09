@@ -88,7 +88,6 @@ def fmt_duration(seconds: float) -> str:
 
 
 def fmt_time_delta(td: timedelta | float) -> str:
-    """Định dạng thời gian chênh lệch từ meeting_end tới recap_time dạng tiếng Việt."""
     if pd.isna(td) or td is None:
         return "—"
     if isinstance(td, (int, float)):
@@ -777,7 +776,7 @@ DEMO = not any(configured(s) for s in ("sales", "google_sheets", "bitrix24", "vo
 with st.sidebar:
     st.header("⚙️ Bộ lọc")
     mode_options = ["Hôm nay", "Hôm qua", "Tuần này", "Tháng này", "Quý này", "Tùy chọn khoảng ngày"]
-    mode = st.selectbox("Mốc thời gian", mode_options, index=2)
+    mode = st.selectbox("Mốc thời gian", mode_options, index=3)
     
     now = datetime.now(TZ)
     anchor = now.date()
@@ -846,7 +845,6 @@ else:
 
     id2sale = dict(zip(roster["bitrix_id"], roster["sale"]))
     vc2sale = dict(zip(roster["vc_id"], roster["sale"]))
-    email2sale = dict(zip(roster["email"], roster["sale"]))
 
     if configured("bitrix24") and not roster.empty:
         bx = attempt("Bitrix24", load_bitrix, tuple(roster["bitrix_id"]), d_start, d_end)
@@ -1072,51 +1070,28 @@ def page_meetings():
     else:
         stack = (st_counts.reindex(index=lb.sort_values("meetings")["sale"], fill_value=0)[present]
                  .reset_index().melt(id_vars="sale", var_name="Trạng thái", value_name="Số meeting"))
-        # Tối ưu lại biểu đồ phân bố trạng thái meeting trông thẩm mỹ và gọn gàng hơn
-        chart_height = max(220, min(350, 45 * len(present) + 80)) # Chiều cao linh hoạt vừa phải
+        
+        # Biểu đồ Plotly tinh chỉnh tối ưu thẩm mỹ, chiều cao vừa vặn, bo tròn bar
+        chart_height = max(220, min(350, 45 * len(present) + 80))
         fig = px.bar(
-            stack, 
-            x="Số meeting", 
-            y="sale", 
-            color="Trạng thái", 
-            orientation="h",
-            color_discrete_map=STATUS_COLORS, 
-            category_orders={"Trạng thái": present},
+            stack, x="Số meeting", y="sale", color="Trạng thái", orientation="h",
+            color_discrete_map=STATUS_COLORS, category_orders={"Trạng thái": present},
             labels={"sale": "", "Số meeting": "Số lượng", "Trạng thái": ""}
         )
-        
-        # Tinh chỉnh giao diện hiện đại: bo tròn đầu bar, bỏ viền cứng
         fig.update_traces(
             marker=dict(line=dict(width=0)),
             hovertemplate="<b>%{y}</b><br>%{fullData.name}: <b>%{x}</b> meeting<extra></extra>"
         )
-        
         fig.update_layout(
             height=chart_height,
             margin=dict(l=10, r=20, t=20, b=10),
             barmode="stack", 
-            bargap=0.4, # Khoảng cách giữa các hàng vừa mắt
+            bargap=0.4,
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            legend=dict(
-                orientation="h", 
-                yanchor="bottom", 
-                y=1.02, 
-                xanchor="right", 
-                x=1, 
-                title=None,
-                font=dict(size=12)
-            ),
-            xaxis=dict(
-                showgrid=True, 
-                gridcolor="rgba(200, 200, 200, 0.2)",
-                dtick=max(1, int(np.ceil(lb["meetings"].max() / 6))),
-                zeroline=False
-            ),
-            yaxis=dict(
-                showgrid=False,
-                categoryorder="total ascending"
-            )
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None, font=dict(size=12)),
+            xaxis=dict(showgrid=True, gridcolor="rgba(200, 200, 200, 0.2)", dtick=max(1, int(np.ceil(lb["meetings"].max() / 6))), zeroline=False),
+            yaxis=dict(showgrid=False, categoryorder="total ascending")
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -1149,7 +1124,7 @@ def page_meetings():
 
 def page_all_recap_emails():
     st.subheader("📬 Danh sách tất cả email recap đọc từ Gmail")
-    st.caption("Liệt kê toàn bộ các email recap thu thập được trong kỳ lọc, hỗ trợ mở trực tiếp hộp thư Gmail và lọc dữ liệu chi tiết.")
+    st.caption("Liệt kê toàn bộ các email recap thu thập được trong kỳ lọc, hỗ trợ mở trực tiếp hộp thư Gmail.")
     
     if raw_emails_df is None or raw_emails_df.empty:
         st.info("Chưa có email recap nào được tìm thấy trong khoảng thời gian này.")
@@ -1175,17 +1150,12 @@ def page_all_recap_emails():
         
     df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
     
-    # ── BỔ SUNG KHU VỰC BỘ LỌC TRÊN CÁC CỘT ──
+    # ── BỘ LỌC NHANH CHO CÁC CỘT ──
     col_f1, col_f2 = st.columns([1, 2])
-    
-    # Bộ lọc theo Tên Sale
     all_sales_in_data = ["Tất cả"] + sorted(df_display["Tên sale"].unique().tolist())
     selected_sale_filter = col_f1.selectbox("🔍 Lọc theo Tên Sale", all_sales_in_data)
-    
-    # Bộ lọc tìm kiếm nhanh theo từ khóa trong Tiêu đề mail
     keyword_search = col_f2.text_input("🔎 Tìm kiếm theo từ khóa tiêu đề mail", placeholder="Nhập từ khóa (vd: Haravan, Báo giá, ...)")
     
-    # Áp dụng bộ lọc vào DataFrame hiển thị
     filtered_df = df_display.copy()
     if selected_sale_filter != "Tất cả":
         filtered_df = filtered_df[filtered_df["Tên sale"] == selected_sale_filter]
@@ -1206,7 +1176,6 @@ def page_all_recap_emails():
             "Mở recap": st.column_config.LinkColumn("Mở recap", display_text="🔗 Xem chi tiết mail")
         }
     )
-    
     st.download_button(
         "⬇️ Tải danh sách email recap (CSV)", 
         filtered_df.to_csv(index=False).encode("utf-8-sig"),
