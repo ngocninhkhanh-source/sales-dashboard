@@ -1159,3 +1159,4 @@ pg.run()
 
 st.divider()
 st.caption("Nguồn: Bitrix24 (Lead, Deal, Doanh thu) · VoiceCloud · Google Calendar · Gmail (Báo giá/Estimate & Recap delay)")
+st.caption("Dashboard created by Khanh Ngoc Ninh")
