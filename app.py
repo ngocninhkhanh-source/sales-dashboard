@@ -755,7 +755,25 @@ with st.sidebar:
     if st.button("🔄 Làm mới dữ liệu", width="stretch"):
         st.cache_data.clear()
         st.rerun()
+  st.divider()
+    st.subheader("📥 Cập nhật dữ liệu Bitrix")
+    
+    # Tải file thủ công nếu muốn đè dữ liệu mới ngay
+    uploaded_file = st.file_uploader("Upload file bitrix_sync_data.json", type=["json"], label_visibility="collapsed")
+    if uploaded_file is not None:
+        try:
+            st.session_state["uploaded_bitrix_data"] = json.load(uploaded_file)
+            st.success("✅ Đã nạp dữ liệu từ file upload!")
+            st.cache_data.clear()
+        except Exception as e:
+            st.error("File JSON không hợp lệ.")
 
+    # Hiển thị thời gian sync gần nhất
+    sync_info = load_bitrix_from_sync_file()
+    if sync_info and isinstance(sync_info, dict):
+        st.caption(f"🕒 Bitrix Sync lần cuối:\n**{sync_info.get('updated_at', 'Chưa rõ')}**")
+    else:
+        st.caption("⚠️ Chưa tìm thấy dữ liệu Bitrix Sync.")
 
 # ════════════════════════════════════════════════════════════════════════════
 # TẢI DỮ LIỆU
