@@ -1072,16 +1072,53 @@ def page_meetings():
     else:
         stack = (st_counts.reindex(index=lb.sort_values("meetings")["sale"], fill_value=0)[present]
                  .reset_index().melt(id_vars="sale", var_name="Trạng thái", value_name="Số meeting"))
-        fig = px.bar(stack, x="Số meeting", y="sale", color="Trạng thái", orientation="h",
-                     color_discrete_map=STATUS_COLORS, category_orders={"Trạng thái": present},
-                     labels={"sale": ""})
-        fig.update_traces(marker_line_width=2, marker_line_color="rgba(255,255,255,0.9)",
-                          hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{x}<extra></extra>")
-        fig.update_layout(height=max(300, 40 * len(sales_in_view) + 90), margin=dict(l=0, r=10, t=10, b=0),
-                          barmode="stack", bargap=0.35, legend=dict(orientation="h", y=1.08, x=0, title=None),
-                          xaxis=dict(showgrid=True, dtick=max(1, int(np.ceil(lb["meetings"].max() / 8)))),
-                          yaxis=dict(showgrid=False))
-        st.plotly_chart(fig, width="stretch")
+        # Tối ưu lại biểu đồ phân bố trạng thái meeting trông thẩm mỹ và gọn gàng hơn
+        chart_height = max(220, min(350, 45 * len(present) + 80)) # Chiều cao linh hoạt vừa phải
+        fig = px.bar(
+            stack, 
+            x="Số meeting", 
+            y="sale", 
+            color="Trạng thái", 
+            orientation="h",
+            color_discrete_map=STATUS_COLORS, 
+            category_orders={"Trạng thái": present},
+            labels={"sale": "", "Số meeting": "Số lượng", "Trạng thái": ""}
+        )
+        
+        # Tinh chỉnh giao diện hiện đại: bo tròn đầu bar, bỏ viền cứng
+        fig.update_traces(
+            marker=dict(line=dict(width=0)),
+            hovertemplate="<b>%{y}</b><br>%{fullData.name}: <b>%{x}</b> meeting<extra></extra>"
+        )
+        
+        fig.update_layout(
+            height=chart_height,
+            margin=dict(l=10, r=20, t=20, b=10),
+            barmode="stack", 
+            bargap=0.4, # Khoảng cách giữa các hàng vừa mắt
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(
+                orientation="h", 
+                yanchor="bottom", 
+                y=1.02, 
+                xanchor="right", 
+                x=1, 
+                title=None,
+                font=dict(size=12)
+            ),
+            xaxis=dict(
+                showgrid=True, 
+                gridcolor="rgba(200, 200, 200, 0.2)",
+                dtick=max(1, int(np.ceil(lb["meetings"].max() / 6))),
+                zeroline=False
+            ),
+            yaxis=dict(
+                showgrid=False,
+                categoryorder="total ascending"
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("**📋 Chi tiết từng meeting**")
         pick = st.pills("Lọc trạng thái", present, selection_mode="multi",
