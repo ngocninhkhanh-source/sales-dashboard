@@ -1149,7 +1149,7 @@ def page_meetings():
 
 def page_all_recap_emails():
     st.subheader("📬 Danh sách tất cả email recap đọc từ Gmail")
-    st.caption("Liệt kê toàn bộ các email recap thu thập được trong kỳ lọc, hỗ trợ mở trực tiếp hộp thư Gmail.")
+    st.caption("Liệt kê toàn bộ các email recap thu thập được trong kỳ lọc, hỗ trợ mở trực tiếp hộp thư Gmail và lọc dữ liệu chi tiết.")
     
     if raw_emails_df is None or raw_emails_df.empty:
         st.info("Chưa có email recap nào được tìm thấy trong khoảng thời gian này.")
@@ -1162,7 +1162,6 @@ def page_all_recap_emails():
         s_email = str(em.sender).lower()
         sale_name = email2sale.get(s_email, s_email)
         
-        # Link trực tiếp dẫn đến message chi tiết trong Gmail
         msg_id = getattr(em, "message_id", "")
         link = f"https://mail.google.com/mail/u/0/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
         
@@ -1176,8 +1175,29 @@ def page_all_recap_emails():
         
     df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
     
+    # ── BỔ SUNG KHU VỰC BỘ LỌC TRÊN CÁC CỘT ──
+    col_f1, col_f2 = st.columns([1, 2])
+    
+    # Bộ lọc theo Tên Sale
+    all_sales_in_data = ["Tất cả"] + sorted(df_display["Tên sale"].unique().tolist())
+    selected_sale_filter = col_f1.selectbox("🔍 Lọc theo Tên Sale", all_sales_in_data)
+    
+    # Bộ lọc tìm kiếm nhanh theo từ khóa trong Tiêu đề mail
+    keyword_search = col_f2.text_input("🔎 Tìm kiếm theo từ khóa tiêu đề mail", placeholder="Nhập từ khóa (vd: Haravan, Báo giá, ...)")
+    
+    # Áp dụng bộ lọc vào DataFrame hiển thị
+    filtered_df = df_display.copy()
+    if selected_sale_filter != "Tất cả":
+        filtered_df = filtered_df[filtered_df["Tên sale"] == selected_sale_filter]
+        
+    if keyword_search.strip():
+        kw_lower = keyword_search.strip().lower()
+        filtered_df = filtered_df[filtered_df["Tiêu đề mail recap"].str.lower().str.contains(kw_lower, na=False)]
+    
+    st.markdown(f"Hiển thị **{len(filtered_df)}** / {len(df_display)} email recap")
+    
     st.dataframe(
-        df_display,
+        filtered_df,
         hide_index=True,
         width="stretch",
         column_config={
@@ -1186,9 +1206,10 @@ def page_all_recap_emails():
             "Mở recap": st.column_config.LinkColumn("Mở recap", display_text="🔗 Xem chi tiết mail")
         }
     )
+    
     st.download_button(
         "⬇️ Tải danh sách email recap (CSV)", 
-        df_display.to_csv(index=False).encode("utf-8-sig"),
+        filtered_df.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"danh_sach_email_recap_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", 
         mime="text/csv"
     )
