@@ -1055,11 +1055,10 @@ def page_leads():
     st.caption(f"Số lead hiện đang nằm ở từng stage trên Bitrix24, tính tại thời điểm xem (không phụ thuộc kỳ lọc). "
                f"Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
     
-    if stage_tbl.empty or "sale" not in stage_tbl.index.names and stage_tbl.index.name != "sale" and not isinstance(stage_tbl.index, pd.Index):
+    if stage_tbl.empty:
         st.info("Chưa có dữ liệu lead tồn theo stage.")
         return
 
-    # Chuẩn bị dữ liệu bảng stage an toàn
     stage_view_full = stage_tbl.copy()
     if "lead_open" not in stage_view_full.columns and open_stages:
         stage_view_full["lead_open"] = stage_view_full[[s for s in open_stages if s in stage_view_full.columns]].sum(axis=1)
@@ -1067,16 +1066,16 @@ def page_leads():
     stage_view_full = stage_view_full.rename(columns={"lead_open": "Tồn"})
     existing_stages = [s for s in stages if s in stage_view_full.columns]
     stage_view_full["Tổng"] = stage_view_full[existing_stages].sum(axis=1)
-    stage_view_full = stage_view_full.reset_index().rename(columns={"index": "Tên Sale"})
+    stage_view_full = stage_view_full.reset_index().rename(columns={"index": "Sale"})
     
-    # Bộ lọc theo Tên Sale
+    # Bộ lọc theo Sale
     col_f1, col_f2 = st.columns([1, 2])
-    all_sales_in_leads = ["Tất cả"] + sorted(stage_view_full["Tên Sale"].unique().tolist()) if "Tên Sale" in stage_view_full.columns else ["Tất cả"]
-    selected_sale_lead = col_f1.selectbox("🔍 Lọc theo Tên Sale", all_sales_in_leads, key="lead_sale_filter")
+    all_sales_in_leads = ["Tất cả"] + sorted(stage_view_full["Sale"].unique().tolist()) if "Sale" in stage_view_full.columns else ["Tất cả"]
+    selected_sale_lead = col_f1.selectbox("🔍 Lọc theo Sale", all_sales_in_leads, key="lead_sale_filter")
     
     filtered_stage_df = stage_view_full.copy()
-    if selected_sale_lead != "Tất cả" and "Tên Sale" in filtered_stage_df.columns:
-        filtered_stage_df = filtered_stage_df[filtered_stage_df["Tên Sale"] == selected_sale_lead]
+    if selected_sale_lead != "Tất cả" and "Sale" in filtered_stage_df.columns:
+        filtered_stage_df = filtered_stage_df[filtered_stage_df["Sale"] == selected_sale_lead]
         
     if "Tồn" in filtered_stage_df.columns:
         filtered_stage_df = filtered_stage_df.sort_values("Tồn", ascending=False)
@@ -1085,13 +1084,13 @@ def page_leads():
         num_cols = filtered_stage_df.select_dtypes(include=[np.number]).columns
         if len(num_cols) > 0:
             sum_row = filtered_stage_df[num_cols].sum().to_frame().T
-            sum_row["Tên Sale"] = "TỔNG"
+            sum_row["Sale"] = "TỔNG"
             filtered_stage_df = pd.concat([filtered_stage_df, sum_row], ignore_index=True)
         
-    st.markdown(f"Hiển thị **{len(filtered_stage_df[filtered_stage_df.get('Tên Sale', '') != 'TỔNG'])}** nhân sự")
+    st.markdown(f"Hiển thị **{len(filtered_stage_df[filtered_stage_df.get('Sale', '') != 'TỔNG'])}** nhân sự")
     
     st.dataframe(filtered_stage_df, hide_index=True, width="stretch", column_config={
-        "Tên Sale": st.column_config.TextColumn(pinned=True),
+        "Sale": st.column_config.TextColumn(pinned=True),
         "Tồn": st.column_config.NumberColumn(help="Tổng lead chưa ra kết quả"),
         "Tổng": st.column_config.NumberColumn(help="Tổng tất cả stage trong bảng"),
         **{c: st.column_config.NumberColumn(help="Không tính vào Tồn") for c in closed_stages if c in stages},
