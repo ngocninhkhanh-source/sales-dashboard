@@ -579,11 +579,17 @@ def load_recap_emails(emails: tuple[str, ...], d_start: date, d_end: date, leade
                 est_amount = extract_estimate_amount(combined_text)
                 
                 rcpt = re.findall(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+", (h.get("to", "") + "," + h.get("cc", "")).lower())
-                rows.append({"sender": email.lower(), "ts": int(m.get("internalDate", 0)) / 1000,
-                             "subject": subject_text, "rcpt": ",".join(rcpt), "est_amount": est_amount})
+                rows.append({
+                    "sender": email.lower(), 
+                    "ts": int(m.get("internalDate", 0)) / 1000,
+                    "subject": subject_text, 
+                    "rcpt": ",".join(rcpt), 
+                    "est_amount": est_amount,
+                    "message_id": mid
+                })
         except Exception as e:
             errors.append(f"{email}: {e}")
-    df = pd.DataFrame(rows, columns=["sender", "ts", "subject", "rcpt", "est_amount"])
+    df = pd.DataFrame(rows, columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id"])
     df["ts"] = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert(TZ)
     df.attrs["errors"] = sorted(set(errors))[:20]
     return df
@@ -608,32 +614,20 @@ def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
     ways = list(g.get("match_by", ["guest_email", "title_name"]))
     out = []
     now_dt = datetime.now(TZ)
-    
     for r in meetings.itertuples():
         found, how, amount, time_diff_str = None, "", 0.0, "—"
         if r.end <= now_dt and not emails.empty:
-            # Lọc các email gửi từ khi bắt đầu meeting trở về sau (cùng Sale)
             c = emails[(emails["sender"] == str(r.email).lower()) & (emails["ts"] >= r.ts)]
             guests = {x.strip() for x in str(r.guests).split(",") if x.strip()}
-            
-            # Lấy các từ khóa từ tiêu đề lịch
-            name_tokens = title_name_tokens(r.title)
-            
+            name = title_name_tokens(r.title)
             for e in c.sort_values("ts").itertuples():
                 matched_by_rule = ""
-                
-                # Cách 1: Khớp qua email khách (như cũ)
                 if "guest_email" in ways and guests & set(e.rcpt.split(",")):
                     matched_by_rule = "email khách"
-                
-                # Cách 2 (Đã cải tiến): Khớp linh hoạt theo tiêu đề
-                # Chỉ cần ÍT NHẤT 50% số từ khóa (hoặc ít nhất 1 từ khóa đặc trưng) xuất hiện trong tiêu đề email
-                elif "title_name" in ways and name_tokens:
+                elif "title_name" in ways and name:
                     email_subj_tokens = set(tokens(e.subject))
-                    common_tokens = name_tokens & email_subj_tokens
-                    
-                    # Nếu trùng từ khóa chính hoặc có tỷ lệ trùng khớp >= 40% các từ đặc trưng
-                    if common_tokens or (len(name_tokens) > 0 and len(common_tokens) / len(name_tokens) >= 0.4):
+                    common_tokens = name & email_subj_tokens
+                    if common_tokens or (len(name) > 0 and len(common_tokens) / len(name) >= 0.4):
                         matched_by_rule = "tên tiêu đề (linh hoạt)"
                 
                 if matched_by_rule:
@@ -641,16 +635,16 @@ def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
                     time_diff = e.ts - r.end
                     time_diff_str = fmt_time_delta(time_diff)
                     break
-                    
         out.append({
             "event_id": r.event_id, 
             "recap": found is not None,
             "recap_subject": found.subject if found is not None else "", 
             "recap_by": how, 
             "est_amount": amount,
-            "recap_delay_str": time_diff_str
+            "recap_delay_str": time_diff_str,
+            "recap_msg_id": found.message_id if found is not None else ""
         })
-    return pd.DataFrame(out, columns=["event_id", "recap", "recap_subject", "recap_by", "est_amount", "recap_delay_str"])
+    return pd.DataFrame(out, columns=["event_id", "recap", "recap_subject", "recap_by", "est_amount", "recap_delay_str", "recap_msg_id"])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -757,6 +751,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
     
     delays = [fmt_time_delta(timedelta(minutes=int(m))) for m in rng.integers(15, 2800, len(meetings))]
     meetings["recap_delay_str"] = np.where(meetings["recap"], delays, "—")
+    meetings["recap_msg_id"] = np.where(meetings["recap"], "demo_msg_id", "")
 
     calls = _demo_events(rng, w, days, 22)
     calls["duration"] = rng.gamma(2.0, 70, len(calls)).round()
@@ -815,9 +810,10 @@ data = {
     "deals_new": pd.DataFrame(columns=["ts", "sale"]),
     "deals_won": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "meetings": pd.DataFrame(columns=["event_id", "sale", "email", "ts", "end", "title", "guests", "recap",
-                                      "recap_subject", "recap_by", "est_amount", "recap_delay_str"]),
+                                      "recap_subject", "recap_by", "est_amount", "recap_delay_str", "recap_msg_id"]),
     "calls": pd.DataFrame(columns=["ts", "sale", "duration"]),
 }
+raw_emails_df = pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id"])
 
 
 def attempt(name: str, fn, *args):
@@ -850,6 +846,7 @@ else:
 
     id2sale = dict(zip(roster["bitrix_id"], roster["sale"]))
     vc2sale = dict(zip(roster["vc_id"], roster["sale"]))
+    email2sale = dict(zip(roster["email"], roster["sale"]))
 
     if configured("bitrix24") and not roster.empty:
         bx = attempt("Bitrix24", load_bitrix, tuple(roster["bitrix_id"]), d_start, d_end)
@@ -863,17 +860,17 @@ else:
         m = attempt("Google Calendar", load_meetings_leader if g_leader else load_meetings,
                     tuple(roster["email"]), tuple(roster["sale"]), d_start, d_end)
         if m is not None:
-            data["meetings"] = m.assign(recap=pd.NA, est_amount=0.0, recap_delay_str="—")
+            data["meetings"] = m.assign(recap=pd.NA, est_amount=0.0, recap_delay_str="—", recap_msg_id="")
 
     gmail_on = g_leader or (configured("gmail") and configured("gcp_service_account"))
     mt = data["meetings"]
-    if gmail_on and not mt.empty:
-        senders = tuple(sorted(set(mt.loc[mt["end"] <= now, "email"])))
-        em = (attempt("Gmail (recap)", load_recap_emails, senders, d_start, d_end, g_leader) if senders
-              else pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount"]))
-        if em is not None:
-            rc = match_recaps(mt, em)
-            data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str"], errors="ignore").merge(rc, on="event_id", how="left")
+    if gmail_on and not roster.empty:
+        senders = tuple(sorted(set(roster["email"])))
+        raw_emails_df = (attempt("Gmail (recap)", load_recap_emails, senders, d_start, d_end, g_leader) if senders
+                         else pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id"]))
+        if raw_emails_df is not None and not mt.empty:
+            rc = match_recaps(mt, raw_emails_df)
+            data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id"], errors="ignore").merge(rc, on="event_id", how="left")
             status.setdefault("Gmail (recap)", "✅ Đã kết nối")
 
     if configured("voicecloud") and not roster.empty:
@@ -1113,6 +1110,53 @@ def page_meetings():
             st.caption("Chưa cấu hình Gmail nên chưa kiểm tra được recap.")
 
 
+def page_all_recap_emails():
+    st.subheader("📬 Danh sách tất cả email recap đọc từ Gmail")
+    st.caption("Liệt kê toàn bộ các email recap thu thập được trong kỳ lọc, hỗ trợ mở trực tiếp hộp thư Gmail.")
+    
+    if raw_emails_df is None or raw_emails_df.empty:
+        st.info("Chưa có email recap nào được tìm thấy trong khoảng thời gian này.")
+        return
+        
+    email2sale = dict(zip(roster["email"], roster["sale"])) if not roster.empty else {}
+    
+    rows = []
+    for em in raw_emails_df.itertuples():
+        s_email = str(em.sender).lower()
+        sale_name = email2sale.get(s_email, s_email)
+        
+        # Link trực tiếp dẫn đến message chi tiết trong Gmail
+        msg_id = getattr(em, "message_id", "")
+        link = f"https://mail.google.com/mail/u/0/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
+        
+        rows.append({
+            "Ngày gửi recap": em.ts.tz_localize(None) if not pd.isna(em.ts) else None,
+            "Tên sale": sale_name,
+            "Tiêu đề mail recap": em.subject,
+            "Estimate doanh thu": em.est_amount,
+            "Mở recap": link
+        })
+        
+    df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
+    
+    st.dataframe(
+        df_display,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Ngày gửi recap": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
+            "Estimate doanh thu": st.column_config.NumberColumn(format="localized"),
+            "Mở recap": st.column_config.LinkColumn("Mở recap", display_text="🔗 Xem chi tiết mail")
+        }
+    )
+    st.download_button(
+        "⬇️ Tải danh sách email recap (CSV)", 
+        df_display.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"danh_sach_email_recap_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", 
+        mime="text/csv"
+    )
+
+
 def page_trends():
     st.caption("Theo giờ khi xem 1 ngày, theo ngày khi xem nhiều ngày.")
     c1, c2 = st.columns(2)
@@ -1156,6 +1200,7 @@ pages = {"Báo cáo": [
     st.Page(page_overview, title="Tổng quan", icon="📊", default=True),
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
     st.Page(page_meetings, title="Meeting & recap", icon="✉️", url_path="meeting-recap"),
+    st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
     st.Page(page_trends, title="Xu hướng hoạt động", icon="📈", url_path="xu-huong"),
 ]}
 if configured("google_oauth"):
