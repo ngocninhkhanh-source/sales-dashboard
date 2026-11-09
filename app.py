@@ -260,7 +260,29 @@ def load_roster_from_sheet() -> pd.DataFrame:
 # NGUỒN 1 — BITRIX24 (Hỗ trợ đọc từ File Sync của Bookmarklet)
 # ════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=60)
+@st.cache_data(ttl=120, show_spinner="Đang đọc dữ liệu Bitrix24 từ Google Drive...")
 def load_bitrix_from_sync_file():
+    # 1. Đọc thử từ Google Drive nếu Leader đã kết nối Google OAuth
+    if leader_mode():
+        try:
+            from googleapiclient.discovery import build
+            from google.oauth2.credentials import Credentials
+            c = secret("google_oauth")
+            creds = Credentials(None, refresh_token=c["refresh_token"], client_id=c["client_id"],
+                                client_secret=c["client_secret"], token_uri=TOKEN_URI, scopes=["https://www.googleapis.com/auth/drive.readonly"])
+            drive_svc = build("drive", "v3", credentials=creds, cache_discovery=False)
+            
+            # Tìm file bitrix_sync_data.json trên Drive
+            res = drive_svc.files().list(q="name = 'bitrix_sync_data.json' and trashed = false", fields="files(id, name, modifiedTime)").execute()
+            files = res.get("files", [])
+            if files:
+                file_id = files[0]["id"]
+                content = drive_svc.files().get_media(fileId=file_id).execute()
+                return json.loads(content.decode("utf-8"))
+        except Exception as e:
+            pass
+
+    # 2. Đọc từ file local nếu lưu cùng thư mục app
     try:
         with open("bitrix_sync_data.json", "r", encoding="utf-8") as f:
             return json.load(f)
