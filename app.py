@@ -261,139 +261,70 @@ def load_roster_from_sheet() -> pd.DataFrame:
 # ════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=60)
 @st.cache_data(ttl=120, show_spinner="Đang đọc dữ liệu Bitrix24 từ Google Drive...")
+@st.cache_data(ttl=60, show_spinner="Đang đọc dữ liệu Bitrix24 sync...")
 def load_bitrix_from_sync_file():
-    # 1. Đọc thử từ Google Drive nếu Leader đã kết nối Google OAuth
-    if leader_mode():
+    raw_data = None
+    
+    # 1. Kiểm tra file upload trong session nếu có
+    if "uploaded_bitrix_data" in st.session_state and st.session_state["uploaded_bitrix_data"]:
+        raw_data = st.session_state["uploaded_bitrix_data"]
+
+    # 2. Đọc từ Google Drive nếu có kết nối OAuth Leader
+    if not raw_data and leader_mode():
         try:
             from googleapiclient.discovery import build
             from google.oauth2.credentials import Credentials
             c = secret("google_oauth")
             creds = Credentials(None, refresh_token=c["refresh_token"], client_id=c["client_id"],
-                                client_secret=c["client_secret"], token_uri=TOKEN_URI, scopes=["https://www.googleapis.com/auth/drive.readonly"])
+                                client_secret=c["client_secret"], token_uri=TOKEN_URI, 
+                                scopes=["https://www.googleapis.com/auth/drive.readonly"])
             drive_svc = build("drive", "v3", credentials=creds, cache_discovery=False)
             
-            # Tìm file bitrix_sync_data.json trên Drive
-            res = drive_svc.files().list(q="name = 'bitrix_sync_data.json' and trashed = false", fields="files(id, name, modifiedTime)").execute()
+            res = drive_svc.files().list(q="name = 'bitrix_sync_data.json' and trashed = false", 
+                                         fields="files(id, name, modifiedTime)").execute()
             files = res.get("files", [])
             if files:
-                file_id = files[0]["id"]
-                content = drive_svc.files().get_media(fileId=file_id).execute()
-                return json.loads(content.decode("utf-8"))
-        except Exception as e:
+                content = drive_svc.files().get_media(fileId=files[0]["id"]).execute()
+                raw_data = json.loads(content.decode("utf-8"))
+        except Exception:
             pass
 
-    # 2. Đọc từ file local nếu lưu cùng thư mục app
-    try:
-        with open("bitrix_sync_data.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+    # 3. Đọc từ file local lưu cùng thư mục app.py
+    if not raw_data:
+        try:
+            with open("bitrix_sync_data.json", "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+        except Exception:
+            return None
+
+    if not raw_data:
         return None
 
-
-def _bitrix(method: str, params: dict) -> dict:
-    base = secret("bitrix24", "webhook_url").rstrip("/")
-    r = requests.post(f"{base}/{method}.json", json=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if "error" in data:
-        raise RuntimeError(f"Bitrix24 {method}: {data.get('error_description', data['error'])}")
-    return data
-
-
-def _bitrix_list(method: str, params: dict, max_items: int = 20000) -> list[dict]:
-    items, start = [], 0
-    while True:
-        data = _bitrix(method, {**params, "start": start})
-        items.extend(data.get("result", []))
-        if "next" not in data or len(items) >= max_items:
-            return items
-        start = data["next"]
-        _time.sleep(0.5)
-
-
-def _bitrix_batch(cmds: dict[str, str]) -> dict[str, int]:
-    out, items = {}, list(cmds.items())
-    for i in range(0, len(items), 50):
-        chunk = dict(items[i:i + 50])
-        res = _bitrix("batch", {"halt": 0, "cmd": chunk}).get("result", {})
-        errs = res.get("result_error") or {}
-        if isinstance(errs, dict) and errs:
-            k, e = next(iter(errs.items()))
-            raise RuntimeError(f"Bitrix24 batch ({k}): {e.get('error_description', e) if isinstance(e, dict) else e}")
-        totals = res.get("result_total") or {}
-        rows = res.get("result") or {}
-        for k in chunk:
-            t = totals.get(k) if isinstance(totals, dict) else None
-            out[k] = int(t) if t is not None else len((rows.get(k) if isinstance(rows, dict) else None) or [])
-        _time.sleep(0.5)
-    return out
-
-
-LEAD_STAGES_DEFAULT = ["New", "Call 1", "Call 2", "Call 3", "Qualify", "UnQLF"]
-
-
-def lead_stage_config() -> tuple[list[str], list[str]]:
-    stages = list(secret("bitrix24", "lead_stages", LEAD_STAGES_DEFAULT))
-    closed = list(secret("bitrix24", "lead_closed_stages", ["UnQLF"]))
-    return stages, closed
-
-
-def _bitrix_frame(rows: list[dict], date_field: str) -> pd.DataFrame:
-    if not rows:
-        return pd.DataFrame(columns=["ts", "bitrix_id", "amount"])
-    df = pd.DataFrame(rows)
-    amount = pd.to_numeric(df["OPPORTUNITY"], errors="coerce") if "OPPORTUNITY" in df else 0
-    return pd.DataFrame({
-        "ts": pd.to_datetime(df[date_field], errors="coerce", utc=True).dt.tz_convert(TZ),
-        "bitrix_id": df["ASSIGNED_BY_ID"].map(clean_id),
-        "amount": pd.Series(amount, index=df.index).fillna(0),
-    })
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner="Đang tải Lead & Deal từ Bitrix24…")
-def load_bitrix(bitrix_ids: tuple[str, ...], d_start: date, d_end: date) -> dict[str, pd.DataFrame]:
-    t0, t1 = (t.isoformat() for t in to_dt_range(d_start, d_end))
-    deal_extra = {"CATEGORY_ID": c} if (c := secret("bitrix24", "deal_category_id")) is not None else {}
-    order = {"ID": "ASC"}
-
-    leads_new = _bitrix_list("crm.lead.list", {
-        "filter": {">=DATE_CREATE": t0, "<DATE_CREATE": t1},
-        "select": ["ID", "ASSIGNED_BY_ID", "DATE_CREATE"], "order": order})
-    deals_new = _bitrix_list("crm.deal.list", {
-        "filter": {">=DATE_CREATE": t0, "<DATE_CREATE": t1, **deal_extra},
-        "select": ["ID", "ASSIGNED_BY_ID", "DATE_CREATE"], "order": order})
-    deals_won = _bitrix_list("crm.deal.list", {
-        "filter": {"STAGE_SEMANTIC_ID": "S", ">=CLOSEDATE": t0, "<CLOSEDATE": t1, **deal_extra},
-        "select": ["ID", "ASSIGNED_BY_ID", "CLOSEDATE", "OPPORTUNITY", "CURRENCY_ID"], "order": order})
-
+    # Bóc tách và chuyển đổi dữ liệu sang DataFrames
+    leads_raw = raw_data.get("leads_raw", [])
+    deals_won_raw = raw_data.get("deals_won_raw", [])
+    
+    df_leads = _bitrix_frame(leads_raw, "DATE_CREATE") if leads_raw else pd.DataFrame(columns=["ts", "bitrix_id", "amount"])
+    df_deals_won = _bitrix_frame(deals_won_raw, "CLOSEDATE") if deals_won_raw else pd.DataFrame(columns=["ts", "bitrix_id", "amount"])
+    
+    # Gom dữ liệu Lead tồn theo stage
     stages, _ = lead_stage_config()
-    statuses = _bitrix("crm.status.list", {"filter": {"ENTITY_ID": "STATUS"}}).get("result", [])
-    by_name = {str(x.get("NAME", "")).strip().lower(): x["STATUS_ID"] for x in statuses}
-    by_code = {str(x["STATUS_ID"]).lower(): x["STATUS_ID"] for x in statuses}
-    codes, missing = {}, []
-    for name in stages:
-        code = by_name.get(name.strip().lower()) or by_code.get(name.strip().lower())
-        if code:
-            codes[name] = code
-        else:
-            missing.append(name)
-    if missing:
-        raise KeyError(f"Không thấy stage {missing} trong Bitrix24.")
-    ids = [u for u in bitrix_ids if u]
-    cmds = {
-        f"u{uid}_{i}": "crm.lead.list?" + urlencode(
-            {"filter[ASSIGNED_BY_ID]": uid, "filter[STATUS_ID]": codes[name], "select[0]": "ID"})
-        for uid in ids for i, name in enumerate(stages)
-    }
-    totals = _bitrix_batch(cmds)
-    stage_rows = [{"bitrix_id": uid, "stage": name, "n": totals[f"u{uid}_{i}"]}
-                  for uid in ids for i, name in enumerate(stages)]
+    stage_counts = {}
+    for l in leads_raw:
+        uid = clean_id(l.get("ASSIGNED_BY_ID", ""))
+        st_id = str(l.get("STATUS_ID", ""))
+        stage_counts[(uid, st_id)] = stage_counts.get((uid, st_id), 0) + 1
+        
+    stage_rows = [{"bitrix_id": uid, "stage": st_name, "n": stage_counts.get((uid, st_name), 0)}
+                  for uid in roster["bitrix_id"] for st_name in stages]
+    df_stages = pd.DataFrame(stage_rows, columns=["bitrix_id", "stage", "n"])
 
     return {
-        "leads_new": _bitrix_frame(leads_new, "DATE_CREATE"),
-        "deals_new": _bitrix_frame(deals_new, "DATE_CREATE"),
-        "deals_won": _bitrix_frame(deals_won, "CLOSEDATE"),
-        "lead_stages": pd.DataFrame(stage_rows, columns=["bitrix_id", "stage", "n"]),
+        "leads_new": df_leads,
+        "deals_new": pd.DataFrame(columns=["ts", "bitrix_id", "amount"]),
+        "deals_won": df_deals_won,
+        "lead_stages": df_stages,
+        "updated_at": raw_data.get("updated_at", "Chưa rõ")
     }
 
 
