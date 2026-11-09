@@ -5,17 +5,14 @@ Nguồn dữ liệu:
   • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal thắng, Doanh thu (tổng giá trị deal thắng)
   • VoiceCloud      : số cuộc gọi & thời lượng gọi
   • Google Calendar : số Meeting với khách
-  • Gmail           : kiểm tra email recap (không giới hạn 48h) + Estimate doanh thu từ báo giá
-
-Google có 2 cách kết nối:
-  A. CHẾ ĐỘ LEADER (khuyên dùng, không cần IT): Sale CC leader vào lời mời meeting và email recap
-     → app chỉ đọc lịch + hộp thư của leader. Leader đăng nhập Google 1 lần ở trang "🔑 Kết nối Google".
-  B. Service account + Domain-wide delegation (cần Super Admin Google Workspace).
+  • Gmail           : kiểm tra email recap + Estimate doanh thu từ báo giá
+  • Bitrix Sync     : Đồng bộ qua Bookmarklet cá nhân của Leader
 """
 
 from __future__ import annotations
 
 import hmac
+import json
 import re
 import time as _time
 from urllib.parse import urlencode
@@ -260,8 +257,17 @@ def load_roster_from_sheet() -> pd.DataFrame:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# NGUỒN 1 — BITRIX24
+# NGUỒN 1 — BITRIX24 (Hỗ trợ đọc từ File Sync của Bookmarklet)
 # ════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=60)
+def load_bitrix_from_sync_file():
+    try:
+        with open("bitrix_sync_data.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _bitrix(method: str, params: dict) -> dict:
     base = secret("bitrix24", "webhook_url").rstrip("/")
     r = requests.post(f"{base}/{method}.json", json=params, timeout=30)
@@ -846,7 +852,11 @@ else:
     id2sale = dict(zip(roster["bitrix_id"], roster["sale"]))
     vc2sale = dict(zip(roster["vc_id"], roster["sale"]))
 
-    if configured("bitrix24") and not roster.empty:
+    # Ưu tiên đọc dữ liệu Bitrix từ file sync của Bookmarklet nếu có
+    sync_bitrix = load_bitrix_from_sync_file()
+    if sync_bitrix:
+        status["Bitrix24"] = "✅ Đã sync (Bookmarklet)"
+    elif configured("bitrix24") and not roster.empty:
         bx = attempt("Bitrix24", load_bitrix, tuple(roster["bitrix_id"]), d_start, d_end)
         if bx is not None:
             for k in ("leads_new", "deals_new", "deals_won", "lead_stages"):
@@ -887,6 +897,12 @@ with st.sidebar:
     st.subheader("Trạng thái kết nối")
     for k in SOURCES:
         st.markdown(f"{status[k]} &nbsp; {k}")
+    
+    # Hiển thị thông tin sync Bitrix từ Bookmarklet nếu có
+    sync_info = load_bitrix_from_sync_file()
+    if sync_info:
+        st.caption(f"📥 Bitrix Sync lần cuối:\n**{sync_info.get('updated_at', '—')}**")
+    
     st.caption(f"Dữ liệu cache {CACHE_TTL // 60} phút · Cập nhật: {now:%H:%M %d/%m}")
 
 if roster.empty:
@@ -1071,7 +1087,6 @@ def page_meetings():
         stack = (st_counts.reindex(index=lb.sort_values("meetings")["sale"], fill_value=0)[present]
                  .reset_index().melt(id_vars="sale", var_name="Trạng thái", value_name="Số meeting"))
         
-        # Biểu đồ Plotly tinh chỉnh tối ưu thẩm mỹ, chiều cao vừa vặn, bo tròn bar
         chart_height = max(220, min(350, 45 * len(present) + 80))
         fig = px.bar(
             stack, x="Số meeting", y="sale", color="Trạng thái", orientation="h",
@@ -1138,7 +1153,7 @@ def page_all_recap_emails():
         sale_name = email2sale.get(s_email, s_email)
         
         msg_id = getattr(em, "message_id", "")
-        link = f"https://mail.google.com/mail/u/1/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
+        link = f"https://mail.google.com/mail/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
         
         rows.append({
             "Ngày gửi recap": em.ts.tz_localize(None) if not pd.isna(em.ts) else None,
@@ -1150,7 +1165,6 @@ def page_all_recap_emails():
         
     df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
     
-    # ── BỘ LỌC NHANH CHO CÁC CỘT ──
     col_f1, col_f2 = st.columns([1, 2])
     all_sales_in_data = ["Tất cả"] + sorted(df_display["Tên sale"].unique().tolist())
     selected_sale_filter = col_f1.selectbox("🔍 Lọc theo Tên Sale", all_sales_in_data)
