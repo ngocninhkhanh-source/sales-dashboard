@@ -593,7 +593,7 @@ else{let best=0;for(const k of dcands){const sc=dscore(k);if(sc>best){best=sc;lr
 const lmap={};
 if(lrf){const q=df_[lrf];for(const it of (q.items||[])){lmap[String(it.ID)]=String(it.VALUE).trim();}
 if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){lmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
-const dlost={},warn=[];
+const dlost={},dwon={},warn=[];
 const closedIds=sts.filter(x=>(C.closed||[]).some(n=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())).map(x=>x.STATUS_ID);
 const srcName={},stName={},want=[],ldet={};
 for(const x of srcs){srcName[x.STATUS_ID]=String(x.NAME).trim();}
@@ -604,9 +604,9 @@ const L=await all('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso}
 L.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),0,1));
 const D=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'deal mới của '+name);
 D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
-const W=rdf?[]:await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal won của '+name);
-if(!rdf){W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);});}
-if(rdf){const RV=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S',['>='+rdf]:from},select:['ID','OPPORTUNITY',rdf],order:{ID:'ASC'}},'doanh thu của '+name);RV.forEach(x=>{const d=String(x[rdf]||'').slice(0,10);if(d){add(name,d,2,1);add(name,d,3,parseFloat(x.OPPORTUNITY)||0);}});}
+const W=rdf?[]:await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY','TITLE','SOURCE_ID'],order:{ID:'ASC'}},'deal won của '+name);dwon[name]=[];const wl=(x,d)=>dwon[name].push([String(x.ID),String(x.TITLE||''),parseFloat(x.OPPORTUNITY)||0,x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)',d]);
+if(!rdf){W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);wl(x,day);});}
+if(rdf){const RV=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S',['>='+rdf]:from},select:['ID','OPPORTUNITY',rdf,'TITLE','SOURCE_ID'],order:{ID:'ASC'}},'doanh thu của '+name);RV.forEach(x=>{const d=String(x[rdf]||'').slice(0,10);if(d){add(name,d,2,1);add(name,d,3,parseFloat(x.OPPORTUNITY)||0);wl(x,d);}});}
 stages[name]={};const m={};
 if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rfs)},'lead theo stage của '+name);}catch(e){if(!rfs.length)throw e;warn.push('Không đọc được trường lý do Unqualified: '+e.message);rfs=[];LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
 for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rfs.length&&closedIds.includes(x.STATUS_ID)){rs=rfs.map(k=>{const v=x[k];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>rmaps[k][String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';});}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
@@ -615,7 +615,7 @@ try{const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC
 const lm={};for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
 dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));}catch(e){dlost[name]=[];warn.push('Deal Lost của '+name+': '+e.message);}
 }
-const data={v:5,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:6,dwon:dwon,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -736,6 +736,13 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
           "reason": r[3] if len(r) >= 5 else "", "n": int(r[-1])}
          for u, rows in (snap.get("ldet") or {}).items() if key2sale(u) for r in rows],
         columns=LEAD_DETAIL_COLS)
+    portal = snap.get("portal") or ""
+    won_list = pd.DataFrame(
+        [{"sale": key2sale(u), "id": r[0], "title": r[1], "amount": float(r[2]), "source": r[3],
+          "day": r[4], "link": f"https://{portal}/crm/deal/details/{r[0]}/" if portal else ""}
+         for u, rows in (snap.get("dwon") or {}).items() if key2sale(u) for r in rows], columns=WON_LIST_COLS)
+    won_list["day"] = pd.to_datetime(won_list["day"], errors="coerce").dt.date
+    won_list = won_list[won_list["day"].map(lambda d: isinstance(d, date) and d_start <= d <= d_end)]
     deal_lost = pd.DataFrame(
         [{"sale": key2sale(u), "source": r[0], "closed": r[1], "reason": r[2], "n": int(r[3])}
          for u, rows in (snap.get("dlost") or {}).items() if key2sale(u) for r in rows], columns=DEAL_LOST_COLS)
@@ -754,11 +761,13 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             "revenue": pd.DataFrame(revenue, columns=["ts", "sale", "amount"]),
             "lead_stages": stages,
             "lead_detail": detail,
-            "deal_lost": deal_lost}
+            "deal_lost": deal_lost,
+            "won_list": won_list}
 
 
 LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
 DEAL_LOST_COLS = ["sale", "source", "closed", "reason", "n"]
+WON_LIST_COLS = ["sale", "id", "title", "amount", "source", "day", "link"]
 
 
 def _norm_txt(t) -> str:
@@ -835,7 +844,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 10  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 11  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1214,7 +1223,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
 
     calls = _demo_events(rng, w, days, 22)
     calls["duration"] = rng.gamma(2.0, 70, len(calls)).round()
-    return {
+    out = {
         "leads_new": _demo_events(rng, w, days, 2.2),
         "lead_stages": lead_stage_summary(ld := _demo_lead_detail(today)),
         "lead_detail": ld,
@@ -1224,8 +1233,13 @@ def demo_data(d_start: date, d_end: date) -> dict:
         "meetings": meetings,
         "calls": calls,
     }
-
-
+    dw = out["deals_won"]
+    out["won_list"] = pd.DataFrame({"sale": dw["sale"].values, "id": [str(10000 + i) for i in range(len(dw))],
+                                  "title": [f"Haravan x {c} – Website" for c in rng.choice(DEMO_CLIENTS, len(dw))],
+                                  "amount": dw["amount"].values,
+                                  "source": rng.choice(["Website", "Facebook Ads", "Hotline", "Sale tự tìm"], len(dw)),
+                                  "day": dw["ts"].dt.date.values, "link": ""}, columns=WON_LIST_COLS)
+    return out
 # ════════════════════════════════════════════════════════════════════════════
 # SIDEBAR — BỘ LỌC & SYNC BITRIX
 # ════════════════════════════════════════════════════════════════════════════
@@ -1271,6 +1285,7 @@ data = {
     "lead_stages": pd.DataFrame(columns=["sale", "stage", "n"]),
     "lead_detail": pd.DataFrame(columns=LEAD_DETAIL_COLS),
     "deal_lost": pd.DataFrame(columns=DEAL_LOST_COLS),
+    "won_list": pd.DataFrame(columns=WON_LIST_COLS),
     "deals_new": pd.DataFrame(columns=["ts", "sale"]),
     "deals_won": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "revenue": pd.DataFrame(columns=["ts", "sale", "amount"]),
@@ -1541,7 +1556,7 @@ def page_overview():
                     help=f"Đã recap / meeting đã diễn ra. Thiếu recap: {fmt_int(lb['recap_miss'].sum())}")
 
     st.divider()
-    st.subheader("🏆 Hiệu suất theo Sale")
+    st.markdown("**🏆 Bảng hiệu suất từng Sale**")
     n_months = (d_end.year * 12 + d_end.month) - (d_start.year * 12 + d_start.month) + 1
     kpi = lb["sale"].map(kpi_month).astype(float) * n_months
     view = pd.DataFrame({
@@ -1572,14 +1587,14 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
-    if not DEMO:
-        _render_hara()
 
 
-def _render_hara():
-    st.divider()
+def page_hara():
+    if DEMO:
+        st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
+        return
     team = secret("haracrm", "team", "S2.4")
-    st.subheader(f"📈 Chỉ số funnel HaraCRM — team {team}")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -2034,6 +2049,44 @@ def page_trends():
         st.plotly_chart(trend_chart(trend(mt), COLOR_MEETINGS, "Meeting"), width="stretch")
 
 
+def page_won_deals():
+    w = data.get("won_list", pd.DataFrame(columns=WON_LIST_COLS))
+    _snap = globals().get("snap")
+    if _snap is not None and "dwon" not in _snap:
+        st.warning("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** (trang Cập nhật Bitrix) rồi bấm trên Bitrix24.")
+        return
+    rf = (_snap or {}).get("revField")
+    c1, c2 = st.columns([1, 1.4])
+    s_pick = c1.selectbox("🔍 Lọc theo Sale", ["Tất cả"] + list(lb["sale"]), key="won_sale_filter")
+    src_all = sorted(w["source"].astype(str).unique(), key=_norm_txt) if not w.empty else []
+    src_pick = c2.multiselect("🏷️ Lọc theo Source", src_all, placeholder="Tất cả source", key="won_src_filter")
+    if s_pick != "Tất cả":
+        w = w[w["sale"] == s_pick]
+    if src_pick:
+        w = w[w["source"].astype(str).isin(src_pick)]
+    k = st.columns(3)
+    k[0].metric("🏆 Số deal won", fmt_int(len(w)))
+    k[1].metric("💰 Tổng tiền", fmt_vnd(w["amount"].sum()))
+    k[2].metric("📊 Trung bình / deal", fmt_vnd(w["amount"].mean() if len(w) else 0))
+    st.caption(f"Deal Won có **{rf[1] if rf else 'ngày Won'}** trong kỳ {d_start:%d/%m/%Y} – {d_end:%d/%m/%Y}. "
+               "Bấm **Mở deal ↗** để xem deal trên Bitrix24.")
+    if w.empty:
+        st.info("Không có deal won nào với bộ lọc hiện tại.")
+        return
+    view = (w.sort_values(["day", "amount"], ascending=[False, False])
+            .rename(columns={"day": "Ngày ghi nhận", "sale": "Sale", "title": "Tên deal", "amount": "Số tiền (₫)",
+                             "source": "Source", "link": "Link deal"})
+            [["Ngày ghi nhận", "Sale", "Tên deal", "Số tiền (₫)", "Source", "Link deal"]])
+    st.dataframe(view, hide_index=True, width="stretch", column_config={
+        "Ngày ghi nhận": st.column_config.DateColumn(format="DD/MM/YYYY"),
+        "Tên deal": st.column_config.TextColumn(width="large"),
+        "Số tiền (₫)": st.column_config.NumberColumn(format="localized"),
+        "Link deal": st.column_config.LinkColumn(display_text="Mở deal ↗"),
+    })
+    st.download_button("⬇️ Tải danh sách deal won (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"deal_won_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
+
+
 def page_google_connect():
     c = dict(secret("google_oauth") or {})
     st.markdown(
@@ -2127,7 +2180,7 @@ def page_hara_update():
             st.warning(f"Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm. Chi tiết: `{err}`")
         if h.get("missTabs"):
             st.warning(f"Không tìm thấy tab {h['missTabs']} trên trang HaraCRM.")
-        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
+        st.page_link(pages["Tổng quan"][1], label="→ Xem Chỉ số funnel HaraCRM", icon="📊")
     elif cur:
         at_ = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
         st.caption(f"Dữ liệu đang dùng: gửi lúc {at_:%H:%M %d/%m}, kỳ trên HaraCRM: {cur.get('filter') or 'không rõ'}.")
@@ -2269,7 +2322,7 @@ def page_bitrix_update():
         if len(empty):
             st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
                        f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
-        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
+        st.page_link(pages["Tổng quan"][0], label="→ Xem Tổng quan", icon="📊")
 
     # 2) Cài nút (một lần)
     st.divider()
@@ -2300,12 +2353,15 @@ def page_bitrix_update():
                "(xoá dấu trang cũ, kéo nút mới).")
 
 
-pages = {"Báo cáo": [
-    st.Page(page_overview, title="Tổng quan", icon="📊", default=True),
+pages = {"Tổng quan": [
+    st.Page(page_overview, title="Hiệu suất theo Sale", icon="🏆", default=True),
+    st.Page(page_hara, title="Chỉ số funnel HaraCRM", icon="📊", url_path="funnel-haracrm"),
+], "Báo cáo": [
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
     st.Page(page_meetings, title="Meeting & recap", icon="✉️", url_path="meeting-recap"),
     st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
     st.Page(page_trends, title="Xu hướng hoạt động", icon="📈", url_path="xu-huong"),
+    st.Page(page_won_deals, title="Danh sách deal won", icon="💰", url_path="deal-won"),
 ]}
 settings = []
 if configured("google_oauth"):
