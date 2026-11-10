@@ -1556,7 +1556,7 @@ def page_overview():
                     help=f"Đã recap / meeting đã diễn ra. Thiếu recap: {fmt_int(lb['recap_miss'].sum())}")
 
     st.divider()
-    st.markdown("**🏆 Bảng hiệu suất từng Sale**")
+    st.subheader("🏆 Hiệu suất theo Sale")
     n_months = (d_end.year * 12 + d_end.month) - (d_start.year * 12 + d_start.month) + 1
     kpi = lb["sale"].map(kpi_month).astype(float) * n_months
     view = pd.DataFrame({
@@ -1587,14 +1587,14 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
+    if not DEMO:
+        _render_hara()
 
 
-def page_hara():
-    if DEMO:
-        st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
-        return
+def _render_hara():
+    st.divider()
     team = secret("haracrm", "team", "S2.4")
-    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
+    st.subheader(f"📈 Chỉ số funnel HaraCRM — team {team}")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -2180,7 +2180,7 @@ def page_hara_update():
             st.warning(f"Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm. Chi tiết: `{err}`")
         if h.get("missTabs"):
             st.warning(f"Không tìm thấy tab {h['missTabs']} trên trang HaraCRM.")
-        st.page_link(pages["Tổng quan"][1], label="→ Xem Chỉ số funnel HaraCRM", icon="📊")
+        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
     elif cur:
         at_ = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
         st.caption(f"Dữ liệu đang dùng: gửi lúc {at_:%H:%M %d/%m}, kỳ trên HaraCRM: {cur.get('filter') or 'không rõ'}.")
@@ -2322,7 +2322,7 @@ def page_bitrix_update():
         if len(empty):
             st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
                        f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
-        st.page_link(pages["Tổng quan"][0], label="→ Xem Tổng quan", icon="📊")
+        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
 
     # 2) Cài nút (một lần)
     st.divider()
@@ -2353,10 +2353,8 @@ def page_bitrix_update():
                "(xoá dấu trang cũ, kéo nút mới).")
 
 
-pages = {"Tổng quan": [
-    st.Page(page_overview, title="Hiệu suất theo Sale", icon="🏆", default=True),
-    st.Page(page_hara, title="Chỉ số funnel HaraCRM", icon="📊", url_path="funnel-haracrm"),
-], "Báo cáo": [
+pages = {"Báo cáo": [
+    st.Page(page_overview, title="Tổng quan", icon="📊", default=True),
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
     st.Page(page_meetings, title="Meeting & recap", icon="✉️", url_path="meeting-recap"),
     st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
