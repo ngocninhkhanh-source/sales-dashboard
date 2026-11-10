@@ -1182,9 +1182,11 @@ def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
             "recap_by": how, 
             "est_amount": amount,
             "recap_delay_str": time_diff_str,
-            "recap_msg_id": found.message_id if found is not None else ""
+            "recap_msg_id": found.message_id if found is not None else "",
+            "recap_link": gmail_link(getattr(found, "rfc_id", ""), found.message_id) if found is not None else "",
         })
-    return pd.DataFrame(out, columns=["event_id", "recap", "recap_subject", "recap_by", "est_amount", "recap_delay_str", "recap_msg_id"])
+    return pd.DataFrame(out, columns=["event_id", "recap", "recap_subject", "recap_by", "est_amount", "recap_delay_str",
+                                      "recap_msg_id", "recap_link"])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1327,6 +1329,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
     delays = [fmt_time_delta(timedelta(minutes=int(m))) for m in rng.integers(15, 2800, len(meetings))]
     meetings["recap_delay_str"] = np.where(meetings["recap"], delays, "—")
     meetings["recap_msg_id"] = np.where(meetings["recap"], "demo_msg_id", "")
+    meetings["recap_link"] = np.where(meetings["recap"], "https://mail.google.com/mail/u/0/#search/recap", "")
 
     calls = _demo_events(rng, w, days, 22)
     calls["duration"] = rng.gamma(2.0, 70, len(calls)).round()
@@ -1412,7 +1415,8 @@ data = {
     "deals_won": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "revenue": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "meetings": pd.DataFrame(columns=["event_id", "sale", "email", "ts", "end", "title", "guests", "recap",
-                                      "recap_subject", "recap_by", "est_amount", "recap_delay_str", "recap_msg_id"]),
+                                      "recap_subject", "recap_by", "est_amount", "recap_delay_str", "recap_msg_id",
+                                      "recap_link"]),
     "calls": pd.DataFrame(columns=["ts", "sale", "duration"]),
 }
 raw_emails_df = pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id", "rfc_id"])
@@ -1506,7 +1510,7 @@ else:
                          else pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id", "rfc_id"]))
         if raw_emails_df is not None and not mt.empty:
             rc = match_recaps(mt, raw_emails_df)
-            data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id"], errors="ignore").merge(rc, on="event_id", how="left")
+            data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id", "recap_link"], errors="ignore").merge(rc, on="event_id", how="left")
             status.setdefault("Gmail (recap)", "✅ Đã kết nối")
 
     if configured("voicecloud") and not roster.empty:
@@ -2072,7 +2076,7 @@ def _meetings_for(d0: date, d1: date) -> pd.DataFrame:
             em = load_recap_emails(tuple(sorted(set(roster["email"]))), d0, d1, g_leader)
             if em is not None:
                 rc = match_recaps(m, em)
-                m = m.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id"],
+                m = m.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id", "recap_link"],
                            errors="ignore").merge(rc, on="event_id", how="left")
     m = m[m["sale"].isin(sales_in_view)].copy()
     m["status"] = m.apply(recap_status, axis=1) if not m.empty else pd.Series(dtype=str)
@@ -2260,7 +2264,7 @@ def page_meetings():
             "Email recap": detail.get("recap_subject", pd.Series("", index=detail.index)).fillna(""),
             "Thời gian gửi recap sau meeting": detail.get("recap_delay_str", pd.Series("—", index=detail.index)),
             "Est Doanh thu (₫)": detail.get("est_amount", pd.Series(0, index=detail.index)),
-            "Khớp theo": detail.get("recap_by", pd.Series("", index=detail.index)).fillna(""),
+            "Mở recap": detail.get("recap_link", pd.Series("", index=detail.index)).fillna(""),
         }),
         hide_index=True, width="stretch",
         column_config={
@@ -2268,6 +2272,9 @@ def page_meetings():
             "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
             "Meeting": st.column_config.TextColumn(width=260),
             "Email recap": st.column_config.TextColumn(width=220, help="Kéo mép cột hoặc rê chuột để xem tiêu đề đầy đủ"),
+            "Mở recap": st.column_config.LinkColumn(
+                "Mở recap", display_text="🔎 Mở trong hộp thư",
+                help="Tìm đúng email recap trong hộp thư Gmail của người bấm — bấm vào kết quả để mở."),
         },
     )
 
