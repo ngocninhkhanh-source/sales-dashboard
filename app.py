@@ -1665,7 +1665,6 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
-    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
