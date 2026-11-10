@@ -1761,6 +1761,7 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1776,7 +1777,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2164,13 +2165,18 @@ def page_deal_open():
         "Chưa chạm (ngày)": ((pd.Timestamp(now) - lst["modified_ts"]).dt.total_seconds() / 86400).round(1),
         "Link deal": lst["link"],
     }).sort_values("Ngày tạo deal")
+    if lst["stage"].nunique() <= 1:      # 1 stage → đã ghi ở tiêu đề, bỏ cột cho gọn
+        view = view.drop(columns=["Stage"])
+    if lst["sale"].nunique() <= 1:
+        view = view.drop(columns=["Sale"])
     st.caption(f"Tổng giá trị: **{fmt_vnd(lst['amount'].sum())}**")
     st.dataframe(view.style.format(lambda v: f"{v:,.0f}".replace(",", "."), subset=["Số tiền (₫)"]),
                  hide_index=True, width="stretch", column_config={
-        "Ngày tạo deal": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
-        "Tên deal": st.column_config.TextColumn(width="large"),
+        "Ngày tạo deal": st.column_config.DatetimeColumn(format="DD/MM/YY"),
+        "Tên deal": st.column_config.TextColumn(width=230, help="Kéo mép cột để xem tên dài"),
+        "Gói dịch vụ": st.column_config.TextColumn(width=150),
         "Tồn (ngày)": st.column_config.NumberColumn(format="%.1f ngày", help="Thời gian từ lúc tạo deal đến hiện tại"),
-        "Cập nhật lần cuối": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm",
+        "Cập nhật lần cuối": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm",
                                                              help="Lần cuối deal được sửa trên Bitrix24 (Modified)"),
         "Chưa chạm (ngày)": st.column_config.NumberColumn(format="%.1f ngày",
                                                           help="Số ngày từ lần cập nhật cuối đến hiện tại"),
