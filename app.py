@@ -1610,8 +1610,8 @@ def page_overview():
     kpi = lb["sale"].map(kpi_month).astype(float) * n_months
     view = pd.DataFrame({
         "Sale": lb["sale"],
-        "Doanh thu (₫)": lb["revenue"],
         "KPI (₫)": kpi,
+        "Doanh thu (₫)": lb["revenue"],
         "% KPI": (lb["revenue"] / kpi.replace(0, np.nan) * 100).round(1),
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
@@ -1637,6 +1637,8 @@ def page_overview():
     money = ["Doanh thu (₫)", "Est Doanh thu", "APU (₫)"]
     st.dataframe(view.style
                  .format(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."), subset=money)
+                 .set_properties(subset=["Doanh thu (₫)"],
+                                 **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
                  .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
                         if r["Sale"] == "TỔNG" else [""] * len(r), axis=1),
                  hide_index=True, width="stretch", column_config={
