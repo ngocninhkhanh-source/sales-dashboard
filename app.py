@@ -1,5 +1,5 @@
 """
-Dashboard Hiệu suất Sale
+S2.4 Team Ngọc - Dashboard Hiệu suất Sale
 ========================
 Nguồn dữ liệu:
   • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal won, Doanh thu (tổng giá trị deal won)
