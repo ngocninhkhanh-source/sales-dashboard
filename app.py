@@ -11,8 +11,10 @@ Nguồn dữ liệu:
 
 from __future__ import annotations
 
+import base64
 import hmac
 import json
+from pathlib import Path
 import re
 import time as _time
 from urllib.parse import urlencode
@@ -180,7 +182,8 @@ if not check_password():
 # ĐĂNG NHẬP GOOGLE LEADER (OAuth)
 # ════════════════════════════════════════════════════════════════════════════
 OAUTH_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly",
-                "https://www.googleapis.com/auth/gmail.readonly"]
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/drive.file"]  # chỉ file do dashboard tự tạo (lưu dữ liệu Bitrix)
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
@@ -483,8 +486,108 @@ def _leader_service(api: str, version: str):
 
     c = secret("google_oauth")
     creds = Credentials(None, refresh_token=c["refresh_token"], client_id=c["client_id"],
-                        client_secret=c["client_secret"], token_uri=TOKEN_URI, scopes=OAUTH_SCOPES)
+                        client_secret=c["client_secret"], token_uri=TOKEN_URI)  # giữ đúng quyền đã cấp
     return build(api, version, credentials=creds, cache_discovery=False)
+
+
+# ── BITRIX24 QUA NÚT "📥 Cập nhật Bitrix" (bookmarklet, không cần webhook) ─────────
+# Leader bấm dấu trang khi đang mở Bitrix24 → đọc CRM bằng phiên đăng nhập của leader → gửi bản
+# tổng hợp theo ngày sang trang "📥 Cập nhật Bitrix" → lưu vào Google Drive của leader (drive.file).
+SNAP_NAME = "sales-dashboard-bitrix.json"
+BOOKMARKLET_JS = Path(__file__).with_name("bitrix_bookmarklet.js")
+
+def bitrix_mode() -> str:
+    return "webhook" if secret("bitrix24", "webhook_url") else "bookmarklet"
+
+@st.cache_resource
+def _mem_store() -> dict:
+    return {}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_snapshot_drive() -> dict | None:
+    svc = _leader_service("drive", "v3")
+    files = svc.files().list(q=f"name='{SNAP_NAME}' and trashed=false", spaces="drive",
+                             orderBy="modifiedTime desc", fields="files(id)").execute().get("files", [])
+    if not files:
+        return None
+    return json.loads(svc.files().get_media(fileId=files[0]["id"]).execute())
+
+def get_snapshot() -> tuple[dict | None, str, str]:
+    """(dữ liệu, nơi lưu, lỗi Drive nếu có) — lấy bản mới nhất giữa Google Drive và bộ nhớ tạm."""
+    drive, err = None, ""
+    if leader_mode():
+        try:
+            drive = _load_snapshot_drive()
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+    mem = _mem_store().get("snap")
+    if drive and (not mem or drive.get("at", 0) >= mem.get("at", 0)):
+        return drive, "Google Drive", err
+    return mem, ("bộ nhớ tạm" if mem else ""), err
+
+def save_snapshot(snap: dict) -> tuple[str, str]:
+    """Lưu vào bộ nhớ tạm (luôn) + Google Drive của leader (nếu được). Trả về (nơi lưu, lỗi)."""
+    _mem_store()["snap"] = snap
+    if not leader_mode():
+        return "bộ nhớ tạm", "Chưa kết nối Google của leader (trang 🔑 Kết nối Google)."
+    try:
+        from googleapiclient.http import MediaInMemoryUpload
+
+        svc = _leader_service("drive", "v3")
+        media = MediaInMemoryUpload(json.dumps(snap).encode(), mimetype="application/json")
+        files = svc.files().list(q=f"name='{SNAP_NAME}' and trashed=false", spaces="drive",
+                                 fields="files(id)").execute().get("files", [])
+        if files:
+            svc.files().update(fileId=files[0]["id"], media_body=media).execute()
+        else:
+            svc.files().create(body={"name": SNAP_NAME, "mimeType": "application/json"},
+                               media_body=media, fields="id").execute()
+        _load_snapshot_drive.clear()
+        return "Google Drive", ""
+    except Exception as e:
+        return "bộ nhớ tạm", f"{type(e).__name__}: {e}"
+
+def decode_snapshot(raw: str) -> dict:
+    raw = raw.strip()
+    if "bx=" in raw:
+        raw = raw.split("bx=", 1)[1].split("&", 1)[0]
+    raw += "=" * (-len(raw) % 4)
+    snap = json.loads(base64.urlsafe_b64decode(raw.encode()).decode("utf-8"))
+    if not isinstance(snap, dict) or "agg" not in snap or "stages" not in snap:
+        raise ValueError("Dữ liệu không đúng định dạng của nút Cập nhật Bitrix.")
+    return snap
+
+def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> dict[str, pd.DataFrame]:
+    """Bản tổng hợp theo ngày → các bảng giống chế độ webhook (mỗi lead/deal 1 dòng)."""
+    leads, deals, won = [], [], []
+    for uid, days in snap.get("agg", {}).items():
+        sale = id2sale.get(clean_id(uid))
+        if not sale:
+            continue
+        for day, (nl, nd, nw, rev) in days.items():
+            d = date.fromisoformat(day)
+            if not (d_start <= d <= d_end):
+                continue
+            ts = datetime.combine(d, time(12), TZ)
+            leads += [{"ts": ts, "sale": sale}] * int(nl)
+            deals += [{"ts": ts, "sale": sale}] * int(nd)
+            won += [{"ts": ts, "sale": sale, "amount": float(rev) if i == 0 else 0.0} for i in range(int(nw))]
+    stages = [{"sale": id2sale[clean_id(u)], "stage": k, "n": int(n)}
+              for u, m in snap.get("stages", {}).items() if clean_id(u) in id2sale for k, n in m.items()]
+    return {"leads_new": pd.DataFrame(leads, columns=["ts", "sale"]),
+            "deals_new": pd.DataFrame(deals, columns=["ts", "sale"]),
+            "deals_won": pd.DataFrame(won, columns=["ts", "sale", "amount"]),
+            "lead_stages": pd.DataFrame(stages, columns=["sale", "stage", "n"])}
+
+def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
+    from urllib.parse import quote
+
+    stages, _ = lead_stage_config()
+    cfg = {"url": target_url, "months": int(secret("bitrix24", "months", 3)), "stages": stages,
+           "users": [[r.bitrix_id, r.sale] for r in roster.itertuples() if r.bitrix_id]}
+    js = "".join(BOOKMARKLET_JS.read_text(encoding="utf-8").splitlines())
+    js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
+    return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner="Đang tải Meeting từ lịch của leader…")
@@ -917,19 +1020,42 @@ else:
     id2sale = dict(zip(roster["bitrix_id"], roster["sale"]))
     vc2sale = dict(zip(roster["vc_id"], roster["sale"]))
 
-    sync_bx = load_bitrix_from_sync_file()
-    if sync_bx:
+    snap, snap_where, snap_err = (get_snapshot() if not roster.empty and bitrix_mode() == "bookmarklet"
+                                  else (None, "", ""))
+    sync_bx = None if snap else load_bitrix_from_sync_file()
+    if snap:
+        data.update(snapshot_frames(snap, id2sale, d_start, d_end))
+        snap_at = datetime.fromtimestamp(snap["at"] / 1000, TZ)
+        snap_old = now - snap_at > timedelta(hours=24)
+        status["Bitrix24"] = f"{'⚠️' if snap_old else '✅'} Cập nhật {snap_at:%H:%M %d/%m}"
+        if snap_old:
+            problems.append(f"**Bitrix24** — dữ liệu cập nhật lần cuối lúc {snap_at:%H:%M %d/%m}. "
+                            "Leader bấm nút **📥 Cập nhật Bitrix** trên Bitrix24 để lấy số mới.")
+        if d_start < date.fromisoformat(snap.get("from", "1970-01-01")):
+            problems.append(f"**Bitrix24** — dữ liệu chỉ có từ {snap['from']}; kỳ đang xem bắt đầu sớm hơn.")
+    if snap_err and not snap:
+        hint = ("Cần **bật Google Drive API** trong Google Cloud và leader vào **🔑 Kết nối Google** đăng nhập lại "
+                "(tick đủ 3 quyền) để lưu dữ liệu Bitrix cho cả team."
+                if any(k in snap_err for k in ("403", "insufficient", "accessNotConfigured", "has not been used",
+                                               "invalid_scope", "SERVICE_DISABLED")) else snap_err)
+        problems.append(f"**Bitrix24 (Google Drive)** — {hint}")
+    if snap:
+        pass  # đã nạp từ nút 📥 Cập nhật Bitrix ở trên
+    elif sync_bx:
         status["Bitrix24"] = "✅ Đã sync (Extension/Drive)"
         for k in ("leads_new", "deals_new", "deals_won", "lead_stages"):
             df_k = sync_bx[k]
             if "bitrix_id" in df_k.columns:
                 df_k["sale"] = df_k["bitrix_id"].map(id2sale)
             data[k] = df_k.dropna(subset=["sale"]) if "sale" in df_k.columns else df_k
-    elif configured("bitrix24") and not roster.empty:
+    elif bitrix_mode() == "webhook" and not roster.empty:
         bx = attempt("Bitrix24", load_bitrix, tuple(roster["bitrix_id"]), d_start, d_end)
         if bx is not None:
             for k in ("leads_new", "deals_new", "deals_won", "lead_stages"):
                 data[k] = bx[k].assign(sale=bx[k]["bitrix_id"].map(id2sale)).dropna(subset=["sale"])
+
+    if not snap and not sync_bx and bitrix_mode() == "bookmarklet" and configured("bitrix24"):
+        status.setdefault("Bitrix24", "⚪ Chưa cập nhật")
 
     g_leader = leader_mode()
     g_sa = configured("google_calendar") and configured("gcp_service_account")
@@ -1283,6 +1409,117 @@ def page_trends():
         st.plotly_chart(trend_chart(trend(mt), COLOR_MEETINGS, "Meeting"), width="stretch")
 
 
+def page_google_connect():
+    c = dict(secret("google_oauth") or {})
+    st.markdown(
+        "Trang dành cho **leader**: đăng nhập Google 1 lần để dashboard đọc lịch (meeting) và hộp thư "
+        "(email recap mà Sale CC cho leader). Quyền chỉ đọc. Có thể thu hồi bất cứ lúc nào tại "
+        "[myaccount.google.com/permissions](https://myaccount.google.com/permissions).")
+    if leader_mode():
+        st.success(f"Đang kết nối với hộp thư của leader {c.get('leader_email', '')}. "
+                   "Chỉ cần làm lại các bước dưới nếu dashboard báo lỗi `invalid_grant` (mất kết nối).")
+    st.markdown("**Bước 1.** Bấm nút, **chọn tài khoản email công ty của leader** (không chọn gmail cá nhân), tick đủ 2 quyền, bấm **Continue / Tiếp tục**.")
+    st.link_button("🔑 Đăng nhập Google (leader)", oauth_login_url(), type="primary")
+    st.markdown("**Bước 2.** Google chuyển tới một trang báo lỗi *\"This site can't be reached\"* — "
+                "**đó là bình thường**. Copy toàn bộ địa chỉ trên thanh địa chỉ (bắt đầu bằng `http://localhost`) "
+                "và dán vào ô dưới:")
+    pasted = st.text_input("Địa chỉ trang lỗi", placeholder="http://localhost/?code=4/0Ab...&scope=...",
+                           label_visibility="collapsed")
+    code = extract_code(pasted) if pasted else st.query_params.get("code", "")
+    if not code:
+        return
+    cache = st.session_state.setdefault("oauth_results", {})
+    if code not in cache:  # mỗi mã chỉ đổi được 1 lần
+        try:
+            cache[code] = oauth_exchange(code)
+        except Exception as e:
+            cache[code] = {"error": type(e).__name__, "error_description": str(e)}
+    tok = cache[code]
+    if "refresh_token" not in tok:
+        st.error(f"Không lấy được mã kết nối: {tok.get('error_description') or tok.get('error') or tok}. "
+                 "Hãy bấm lại nút ở Bước 1 để lấy địa chỉ mới (mỗi địa chỉ chỉ dùng được 1 lần, trong vài phút).")
+        return
+    if c.get("leader_email") and tok.get("email", "").lower() != str(c["leader_email"]).lower():
+        st.warning(f"Bạn vừa đăng nhập bằng **{tok.get('email')}**, khác với leader_email "
+                   f"**{c['leader_email']}** trong Secrets. Nếu nhầm tài khoản, hãy làm lại Bước 1.")
+    st.markdown(f"**Bước 3.** Đã kết nối tài khoản **{tok.get('email')}**. Copy dòng dưới, mở "
+                "**Manage app → ⋮ → Settings → Secrets**, thay dòng `refresh_token` trong phần "
+                "`[google_oauth]` rồi bấm **Save**:")
+    st.code(f'refresh_token = "{tok["refresh_token"]}"', language="toml")
+    st.caption("Mã này cho phép đọc lịch và hộp thư của leader — chỉ dán vào Secrets, không gửi qua chat/email.")
+
+
+def page_bitrix_update():
+    st.markdown("Công ty không cho tạo webhook, nên dashboard đọc Bitrix24 **bằng phiên đăng nhập của leader**: "
+                "leader bấm một nút trên thanh dấu trang khi đang mở Bitrix24. Dữ liệu (3 tháng gần nhất) được "
+                "lưu vào Google Drive của leader để cả team cùng xem.")
+    # 1) Nhận dữ liệu gửi sang (qua ?bx=... hoặc dán tay)
+    incoming = st.query_params.get("bx", "")
+    with st.expander("Không tự chuyển sang được? Dán dữ liệu thủ công"):
+        pasted = st.text_area("Dữ liệu (nút đã tự copy sẵn — chỉ cần dán)", height=80, key="bx_paste")
+    raw = incoming or pasted
+    if raw:
+        try:
+            snap = decode_snapshot(raw)
+            where, err = save_snapshot(snap)
+            st.session_state["bx_last"] = (snap, where, err)
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Không đọc được dữ liệu: {e}")
+        if incoming:
+            st.query_params.clear()
+            st.rerun()
+    if "bx_last" in st.session_state:
+        snap, where, err = st.session_state["bx_last"]
+        at = datetime.fromtimestamp(snap["at"] / 1000, TZ)
+        st.success(f"✅ Đã nhận dữ liệu Bitrix24 lúc {at:%H:%M %d/%m/%Y} (từ {snap['from']}) — lưu tại **{where}**.")
+        if err:
+            st.warning("Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm tới khi app khởi động lại. "
+                       f"Chi tiết: `{err}`. Cách sửa: bật **Google Drive API** trong Google Cloud và vào "
+                       "**🔑 Kết nối Google** đăng nhập lại (tick đủ 3 quyền).")
+        if snap.get("missing"):
+            st.warning(f"Không thấy stage {snap['missing']} trên Bitrix24. Stage hiện có: {snap.get('allStages')}. "
+                       "Sửa dòng `lead_stages` trong Secrets cho đúng tên.")
+        id2 = dict(zip(roster["bitrix_id"], roster["sale"]))
+        rows = []
+        for u, days in snap["agg"].items():
+            v = np.array(list(days.values()) or [[0, 0, 0, 0]], dtype=float).sum(axis=0)
+            rows.append({"Sale": id2.get(clean_id(u), f"Bitrix #{u}"), "Lead mới": int(v[0]), "Deal mới": int(v[1]),
+                         "Deal thắng": int(v[2]), "Doanh thu (₫)": v[3],
+                         "Lead theo stage": sum(snap["stages"].get(u, {}).values())})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
+                     column_config={"Doanh thu (₫)": st.column_config.NumberColumn(format="localized")})
+        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
+
+    # 2) Cài nút (một lần)
+    st.divider()
+    st.subheader("Cài nút 📥 Cập nhật Bitrix (làm 1 lần)")
+    base = secret("bitrix24", "dashboard_url") or ""
+    if not base:
+        try:
+            from urllib.parse import urlparse
+            u = urlparse(st.context.url)
+            base = f"{u.scheme}://{u.netloc}"
+        except Exception:
+            base = ""
+    target = base.rstrip("/") + "/cap-nhat-bitrix"
+    href = bookmarklet_href(target, roster)
+    st.markdown("**Cách 1 — kéo thả:** hiện thanh dấu trang của Chrome (`Cmd/Ctrl + Shift + B`), rồi **kéo nút xanh "
+                "dưới đây** thả lên thanh dấu trang.")
+    import streamlit.components.v1 as components
+    components.html(
+        f"""<a href="{href}" onclick="alert('Đừng bấm ở đây — hãy KÉO nút này lên thanh dấu trang, rồi bấm nó khi đang mở Bitrix24.');return false;"
+        style="display:inline-block;padding:10px 18px;background:rgb(42,120,214);color:white;border-radius:8px;
+        font:600 15px sans-serif;text-decoration:none;cursor:grab">📥 Cập nhật Bitrix</a>""", height=56)
+    st.markdown("**Cách 2 — tạo tay** (nếu kéo không được): chuột phải thanh dấu trang → **Thêm trang… / Add page…** → "
+                "Tên: `📥 Cập nhật Bitrix` → ô **URL** dán toàn bộ đoạn dưới (bấm biểu tượng copy ở góc phải) → Lưu.")
+    st.code(href, language=None, wrap_lines=True)
+    st.markdown("**Mỗi lần cập nhật:** mở một trang Bitrix24 bất kỳ → bấm **📥 Cập nhật Bitrix** trên thanh dấu trang → "
+                "chờ khung thông báo đọc xong (khoảng 30 giây – 2 phút) → bấm **📤 Gửi sang dashboard**.")
+    st.caption(f"Nút đọc dữ liệu của {int((roster['bitrix_id'] != '').sum())} Sale có bitrix_id. Khi thêm/bớt Sale "
+               "hoặc đổi tên stage trong Secrets, hãy cài lại nút (xoá dấu trang cũ, kéo nút mới).")
+
+
 pages = {"Báo cáo": [
     st.Page(page_overview, title="Tổng quan", icon="📊", default=True),
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
@@ -1290,6 +1527,13 @@ pages = {"Báo cáo": [
     st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
     st.Page(page_trends, title="Xu hướng hoạt động", icon="📈", url_path="xu-huong"),
 ]}
+settings = []
+if configured("google_oauth"):
+    settings.append(st.Page(page_google_connect, title="Kết nối Google", icon="🔑", url_path="ket-noi-google"))
+if not DEMO and bitrix_mode() == "bookmarklet":
+    settings.append(st.Page(page_bitrix_update, title="Cập nhật Bitrix", icon="📥", url_path="cap-nhat-bitrix"))
+if settings:
+    pages["Cài đặt"] = settings
 pg = st.navigation(pages, position="sidebar", expanded=True)
 
 st.title(f"{pg.icon} {pg.title}")
