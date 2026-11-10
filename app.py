@@ -1560,7 +1560,7 @@ def kpi_month(sale: str):
 def page_overview():
     tot_held = int(held.sum())
     rate = lb["recap_done"].sum() / tot_held if tot_held else 0
-    row1, row2 = st.columns(4), st.columns(4)
+    row1, row2 = st.columns(5), st.columns(5)
     row1[0].metric("💰 Doanh thu", fmt_vnd(lb["revenue"].sum()),
                    help=(f"Tổng giá trị deal Won có **{(globals().get('snap') or {}).get('revField', [0, 'ngày ghi nhận doanh số'])[1]}** "
                          f"trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", ".")
@@ -1569,8 +1569,11 @@ def page_overview():
     _rf = (globals().get("snap") or {}).get("revField")
     row1[1].metric("🏆 Deal won", fmt_int(lb["deals_won"].sum()),
                    help=f"Deal Won có **{_rf[1]}** trong kỳ" if _rf else "Deal chuyển sang trạng thái Won trong kỳ")
-    row1[2].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
-    row1[3].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
+    _won, _rev = int(lb["deals_won"].sum()), float(lb["revenue"].sum())
+    row1[2].metric("💎 APU toàn team", fmt_vnd(_rev / _won) if _won else "—",
+                   help=f"Tổng doanh thu ÷ tổng deal won của team trong kỳ: {_rev:,.0f} ₫ ÷ {_won} deal".replace(",", "."))
+    row1[3].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
+    row1[4].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
     row2[0].metric("📊 Doanh thu Est (Meeting)", fmt_vnd(lb["est_revenue"].sum()),
                    help="Tổng giá trị dự kiến trích xuất từ báo giá đính kèm/trong email recap.")
     row2[1].metric("📞 Cuộc gọi", fmt_int(lb["calls"].sum()), help=f"Tổng thời lượng: {fmt_duration(lb['talk'].sum())}")
