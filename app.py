@@ -1149,6 +1149,17 @@ def title_name_tokens(title: str) -> set[str]:
     return {t for t in tokens(title) if t not in ignore and not t.isdigit()}
 
 
+def gmail_link(rfc_id: str, msg_id: str = "") -> str:
+    """Link mở email trong hộp thư CỦA NGƯỜI BẤM: tìm theo Message-ID (giống nhau ở hộp thư người gửi, người nhận
+    và người được CC), nên sale bấm sẽ ra mail trong mục Đã gửi của mình, leader ra mail được CC."""
+    from urllib.parse import quote
+    rfc_id = str(rfc_id or "").strip().strip("<>")
+    if rfc_id and rfc_id.lower() != "nan":
+        return "https://mail.google.com/mail/u/0/#search/" + quote(f"rfc822msgid:{rfc_id}", safe="")
+    return f"https://mail.google.com/mail/u/0/#all/{msg_id}" if msg_id else "https://mail.google.com/"
+
+
+
 def match_recaps(meetings: pd.DataFrame, emails: pd.DataFrame) -> pd.DataFrame:
     g = dict(secret("gmail") or {})
     ways = list(g.get("match_by", ["guest_email", "title_name"]))
@@ -2277,16 +2288,6 @@ def page_meetings():
                 help="Tìm đúng email recap trong hộp thư Gmail của người bấm — bấm vào kết quả để mở."),
         },
     )
-
-
-def gmail_link(rfc_id: str, msg_id: str = "") -> str:
-    """Link mở email trong hộp thư CỦA NGƯỜI BẤM: tìm theo Message-ID (giống nhau ở hộp thư người gửi, người nhận
-    và người được CC), nên sale bấm sẽ ra mail trong mục Đã gửi của mình, leader ra mail được CC."""
-    from urllib.parse import quote
-    rfc_id = str(rfc_id or "").strip().strip("<>")
-    if rfc_id and rfc_id.lower() != "nan":
-        return "https://mail.google.com/mail/u/0/#search/" + quote(f"rfc822msgid:{rfc_id}", safe="")
-    return f"https://mail.google.com/mail/u/0/#all/{msg_id}" if msg_id else "https://mail.google.com/"
 
 
 def page_all_recap_emails():
