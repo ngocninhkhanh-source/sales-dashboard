@@ -14,7 +14,6 @@ from __future__ import annotations
 import base64
 import hmac
 import json
-from pathlib import Path
 import re
 import time as _time
 from urllib.parse import urlencode
@@ -494,7 +493,56 @@ def _leader_service(api: str, version: str):
 # Leader bấm dấu trang khi đang mở Bitrix24 → đọc CRM bằng phiên đăng nhập của leader → gửi bản
 # tổng hợp theo ngày sang trang "📥 Cập nhật Bitrix" → lưu vào Google Drive của leader (drive.file).
 SNAP_NAME = "sales-dashboard-bitrix.json"
-BOOKMARKLET_JS = Path(__file__).with_name("bitrix_bookmarklet.js")
+# Mã JavaScript của nút (nhúng sẵn — không cần file riêng). App tự chèn cấu hình vào chỗ __CFG__.
+BOOKMARKLET_SRC = r"""(async()=>{
+const C=__CFG__;
+if(!window.BX||!BX.bitrix_sessid){alert('Hãy bấm nút này khi đang mở một trang Bitrix24 (đã đăng nhập).');return;}
+const box=document.createElement('div');
+box.style.cssText='position:fixed;z-index:2147483647;top:16px;right:16px;width:380px;padding:16px;background:white;color:rgb(34,34,34);border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.25);font:14px/1.5 sans-serif;white-space:pre-line';
+document.body.appendChild(box);
+const say=t=>{box.innerText='📥 Cập nhật Bitrix → Dashboard\n'+t;};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const enc=(fd,k,v)=>{if(v!==null&&typeof v==='object'){for(const i in v)enc(fd,k+'['+i+']',v[i]);}else fd.append(k,v);};
+const call=async(m,p)=>{for(let a=0;a<6;a++){const fd=new URLSearchParams();fd.append('sessid',BX.bitrix_sessid());for(const k in p)enc(fd,k,p[k]);const r=await fetch('/rest/'+m+'.json',{method:'POST',body:fd,credentials:'same-origin'});const d=await r.json();if(d.error==='QUERY_LIMIT_EXCEEDED'){await sleep(1500);continue;}if(d.error)throw new Error(m+': '+(d.error_description||d.error));return d;}throw new Error('Bitrix24 đang quá tải, thử lại sau ít phút.');};
+const all=async(m,p,label)=>{let out=[],s=0;for(;;){const d=await call(m,Object.assign({},p,{start:s}));out=out.concat(d.result||[]);say('Đang đọc '+label+': '+out.length+(d.total?' / '+d.total:''));if(d.next===undefined)break;s=d.next;await sleep(300);}return out;};
+try{
+const now=new Date();const f=new Date(now.getFullYear(),now.getMonth()-C.months+1,1);
+const from=f.getFullYear()+'-'+String(f.getMonth()+1).padStart(2,'0')+'-01';
+const iso=from+'T00:00:00+07:00';
+const agg={},stages={};
+const add=(u,day,i,v)=>{agg[u]=agg[u]||{};agg[u][day]=agg[u][day]||[0,0,0,0];agg[u][day][i]+=v;};
+say('Đang đọc danh sách stage…');
+const sts=(await call('crm.status.list',{filter:{ENTITY_ID:'STATUS'}})).result||[];
+const code={};const missing=[];
+for(const x of sts){code[String(x.NAME).trim()]=x.STATUS_ID;}for(const n of C.stages){if(!sts.some(x=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())){missing.push(n);}}
+const norm=t=>String(t||'').toLowerCase().replace(/đ/g,'d').normalize('NFD').replace(/[̀-ͯ]/g,'').split(/[^a-z0-9]+/).filter(Boolean).sort().join(' ');
+const resolved=[],found={},unresolved=[];
+for(const [bid,name,email] of C.users){let uid='',how='';
+say('Đang tìm tài khoản Bitrix24 của '+name+'…');
+if(email){const r=await call('user.get',{FILTER:{EMAIL:email}}).catch(()=>({}));const u=(r.result||[])[0];if(u){uid=String(u.ID);how='email';}}
+if(!uid&&name){const r=await call('user.search',{FIND:name}).catch(()=>({}));const list=r.result||[];const n=norm(name);const u=list.find(x=>norm([x.LAST_NAME,x.SECOND_NAME,x.NAME].join(' '))===n)||(list.length===1?list[0]:null);if(u){uid=String(u.ID);how='tên';}}
+
+if(uid){resolved.push([uid,name]);found[name]=[uid,how];}else{unresolved.push(name);}
+await sleep(250);}
+for(const [u,name] of resolved){
+const L=await all('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'lead mới của '+name);
+L.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),0,1));
+const D=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'deal mới của '+name);
+D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
+const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal thắng của '+name);
+W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);});
+stages[name]={};
+for(const n in code){say('Đang đếm lead theo stage của '+name+': '+n);const d=await call('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:code[n]},select:['ID'],start:0});stages[name][n]=d.total||0;await sleep(250);}
+}
+const data={v:2,users:found,unresolved:unresolved,at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const b64=btoa(unescape(encodeURIComponent(JSON.stringify(data)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+say('✅ Đã đọc xong dữ liệu Bitrix24 từ '+from.split('-').reverse().join('/')+'.\nBấm nút dưới để gửi sang dashboard.');
+const btn=document.createElement('button');btn.innerText='📤 Gửi sang dashboard';btn.style.cssText='margin-top:10px;padding:8px 14px;background:rgb(42,120,214);color:white;border:0;border-radius:6px;font-weight:600;cursor:pointer';
+btn.onclick=()=>{try{navigator.clipboard.writeText(b64);}catch(e){}window.open(C.url+'?bx='+b64,'_blank');box.remove();};
+const x=document.createElement('button');x.innerText='Đóng';x.style.cssText='margin:10px 0 0 10px;padding:8px 14px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';x.onclick=()=>box.remove();
+box.appendChild(btn);box.appendChild(x);
+}catch(e){say('❌ Lỗi: '+e.message);const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);}
+})();"""
 
 def bitrix_mode() -> str:
     return "webhook" if secret("bitrix24", "webhook_url") else "bookmarklet"
@@ -560,8 +608,10 @@ def decode_snapshot(raw: str) -> dict:
 def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> dict[str, pd.DataFrame]:
     """Bản tổng hợp theo ngày → các bảng giống chế độ webhook (mỗi lead/deal 1 dòng)."""
     leads, deals, won = [], [], []
+    names = set(id2sale.values())
+    key2sale = lambda k: k if k in names else id2sale.get(clean_id(k))
     for uid, days in snap.get("agg", {}).items():
-        sale = id2sale.get(clean_id(uid))
+        sale = key2sale(uid)
         if not sale:
             continue
         for day, (nl, nd, nw, rev) in days.items():
@@ -573,8 +623,8 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             deals += [{"ts": ts, "sale": sale}] * int(nd)
             won += [{"ts": ts, "sale": sale, "amount": float(rev) if i == 0 else 0.0} for i in range(int(nw))]
     cfg = {x.strip().lower(): x for x in lead_stage_config()[0]}  # khớp tên stage không phân biệt hoa thường
-    stages = [{"sale": id2sale[clean_id(u)], "stage": cfg.get(str(k).strip().lower(), k), "n": int(n)}
-              for u, m in snap.get("stages", {}).items() if clean_id(u) in id2sale for k, n in m.items()]
+    stages = [{"sale": key2sale(u), "stage": cfg.get(str(k).strip().lower(), k), "n": int(n)}
+              for u, m in snap.get("stages", {}).items() if key2sale(u) for k, n in m.items()]
     return {"leads_new": pd.DataFrame(leads, columns=["ts", "sale"]),
             "deals_new": pd.DataFrame(deals, columns=["ts", "sale"]),
             "deals_won": pd.DataFrame(won, columns=["ts", "sale", "amount"]),
@@ -585,8 +635,8 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
 
     stages, _ = lead_stage_config()
     cfg = {"url": target_url, "months": int(secret("bitrix24", "months", 3)), "stages": stages,
-           "users": [[r.bitrix_id, r.sale] for r in roster.itertuples() if r.bitrix_id]}
-    js = "".join(BOOKMARKLET_JS.read_text(encoding="utf-8").splitlines())
+           "users": [[r.bitrix_id, r.sale, r.email] for r in roster.itertuples()]}
+    js = "".join(BOOKMARKLET_SRC.splitlines())
     js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
@@ -1483,15 +1533,31 @@ def page_bitrix_update():
         if missing:
             st.warning(f"Không thấy stage {missing} trên Bitrix24. Stage hiện có: {snap.get('allStages')}. "
                        "Sửa dòng `lead_stages` trong Secrets cho đúng tên.")
-        id2 = dict(zip(roster["bitrix_id"], roster["sale"]))
-        rows = []
-        for u, days in snap["agg"].items():
+        rows, users = [], snap.get("users", {})
+        for r in roster.itertuples():
+            if snap.get("v", 1) >= 2:   # bản mới: dữ liệu theo tên Sale, tài khoản tìm theo email/tên
+                key = r.sale
+                uid, how = users.get(r.sale, ["", ""])
+            else:                       # bản cũ: dữ liệu theo bitrix_id
+                key = clean_id(r.bitrix_id)
+                uid, how = (key, "bitrix_id") if key else ("", "")
+            days = snap["agg"].get(key, {}) if key else {}
             v = np.array(list(days.values()) or [[0, 0, 0, 0]], dtype=float).sum(axis=0)
-            rows.append({"Sale": id2.get(clean_id(u), f"Bitrix #{u}"), "Lead mới": int(v[0]), "Deal mới": int(v[1]),
-                         "Deal thắng": int(v[2]), "Doanh thu (₫)": v[3],
-                         "Lead theo stage": sum(snap["stages"].get(u, {}).values())})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
+            rows.append({"Sale": r.sale,
+                         "Tài khoản Bitrix": f"ID {uid} (tìm theo {how})" if uid else "❌ Không tìm thấy",
+                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "Deal thắng": int(v[2]), "Doanh thu (₫)": v[3],
+                         "Lead theo stage": sum(snap["stages"].get(key, {}).values()) if key else 0})
+        summary = pd.DataFrame(rows)
+        st.dataframe(summary, hide_index=True, width="stretch",
                      column_config={"Doanh thu (₫)": st.column_config.NumberColumn(format="localized")})
+        if snap.get("unresolved"):
+            st.error(f"Không tìm thấy tài khoản Bitrix24 của: **{', '.join(snap['unresolved'])}**. Kiểm tra `email` "
+                     "trong Secrets có đúng email đăng nhập Bitrix24 không, hoặc `name` có đúng họ tên trên Bitrix24 không.")
+        empty = summary[(summary["Tài khoản Bitrix"] != "❌ Không tìm thấy") &
+                        (summary[["Lead mới", "Deal mới", "Deal thắng", "Lead theo stage"]].sum(axis=1) == 0)]
+        if len(empty):
+            st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
+                       f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
         st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
 
     # 2) Cài nút (một lần)
@@ -1519,8 +1585,9 @@ def page_bitrix_update():
     st.code(href, language=None, wrap_lines=True)
     st.markdown("**Mỗi lần cập nhật:** mở một trang Bitrix24 bất kỳ → bấm **📥 Cập nhật Bitrix** trên thanh dấu trang → "
                 "chờ khung thông báo đọc xong (khoảng 30 giây – 2 phút) → bấm **📤 Gửi sang dashboard**.")
-    st.caption(f"Nút đọc dữ liệu của {int((roster['bitrix_id'] != '').sum())} Sale có bitrix_id. Khi thêm/bớt Sale "
-               "hoặc đổi tên stage trong Secrets, hãy cài lại nút (xoá dấu trang cũ, kéo nút mới).")
+    st.caption(f"Nút đọc dữ liệu của {len(roster)} Sale trong Secrets — tự tìm tài khoản Bitrix24 theo email, "
+               "nếu không thấy thì theo họ tên. Khi thêm/bớt Sale trong Secrets, hãy cài lại nút "
+               "(xoá dấu trang cũ, kéo nút mới).")
 
 
 pages = {"Báo cáo": [
