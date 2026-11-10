@@ -1,5 +1,5 @@
 """
-S2.4 Team Ngọc - Dashboard Hiệu suất Sale
+Dashboard Hiệu suất Sale
 ========================
 Nguồn dữ liệu:
   • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal won, Doanh thu (tổng giá trị deal won)
@@ -44,7 +44,8 @@ STATUS_COLORS = {
     ST_UPCOMING: "#b4b2a9", ST_UNKNOWN: "#d9d8d2",
 }
 
-st.set_page_config(page_title="Dashboard Hiệu suất Sale", page_icon="📊", layout="wide")
+APP_TITLE = "S2.4 Team Ngọc - Dashboard Hiệu suất Sale"
+st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -557,8 +558,8 @@ for(const k of rfs){const q=lf[k];const mp={};for(const it of (q.items||[])){mp[
 if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){mp[String(it.STATUS_ID)]=String(it.NAME).trim();}}rmaps[k]=mp;}
 const dateF=Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0&&['date','datetime'].includes(df_[k].type));
 let rdf='';
-if(C.revDate){rdf=Object.keys(df_).find(k=>k.toLowerCase()===String(C.revDate).toLowerCase()||norm(dlab(k))===norm(C.revDate))||'';}
-else{rdf=dateF.find(k=>{const t=new Set(norm(dlab(k)).split(' '));return t.has('doanh')&&t.has('thu')&&(t.has('ghi')||t.has('nhan'));})||'';}
+rdf=Object.keys(df_).find(k=>C.revDate&&(k.toLowerCase()===String(C.revDate).toLowerCase()||norm(dlab(k))===norm(C.revDate)))||'';
+if(!rdf){const rk=k=>{const t=new Set(norm(dlab(k)).split(' '));return t.has('doanh')&&(t.has('ghi')||t.has('nhan'))?(t.has('so')?2:(t.has('thu')?1:0)):0;};let best=0;for(const k of dateF){const sc=rk(k);if(sc>best){best=sc;rdf=k;}}}
 const dcands=Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0&&['enumeration','string','crm_status','list'].includes(df_[k].type));
 const dscore=k=>{const t=new Set(norm(dlab(k)).split(' '));return (t.has('ly')&&t.has('do')?2:0)+(['lost','fail','failed','thua','huy'].some(w=>t.has(w))||(t.has('that')&&t.has('bai'))?2:0);};
 let lrf='';
@@ -740,7 +741,7 @@ def _cfg_list(v) -> list[str]:
     return [str(x) for x in (v if isinstance(v, (list, tuple)) else [v]) if str(x).strip()]
 
 
-BOOKMARKLET_VERSION = 9  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 10  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -751,7 +752,7 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "users": [[r.bitrix_id, r.sale, r.email] for r in roster.itertuples()],
            "excl": lead_exclude_sources(), "closed": lead_stage_config()[1],
            "reason": _cfg_list(secret("bitrix24", "unqual_reason_field", "")),
-           "revDate": str(secret("bitrix24", "revenue_date_field", "") or ""),
+           "revDate": str(secret("bitrix24", "revenue_date_field", "Ngày ghi nhận doanh số") or "Ngày ghi nhận doanh số"),
            "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION}
     js = "".join(BOOKMARKLET_SRC.splitlines())
     js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
@@ -1413,12 +1414,36 @@ def trend_chart(df: pd.DataFrame, color: str, label: str):
     return fig
 
 
+KPI_DEFAULT = {"Võ Minh Hiếu": 100_000_000, "Nguyễn Đức Toàn": 100_000_000,
+               "Nguyễn Thị Tuyết Nhi": 100_000_000, "Lê Thị Ngọc Châu": 50_000_000}
+
+
+def _plain(t) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
+    return " ".join("".join(c for c in t if unicodedata.category(c) != "Mn").split())
+
+
+def kpi_month(sale: str):
+    """KPI doanh thu/tháng của Sale: lấy từ mục [kpi] trong Secrets (tên đầy đủ hoặc tên gọi), mặc định theo KPI_DEFAULT."""
+    conf = dict(secret("kpi") or {}) or KPI_DEFAULT
+    full = _plain(sale)
+    for k, v in conf.items():
+        kk = _plain(k)
+        if kk == full or (kk and " " not in kk and full.split()[-1:] == [kk]):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def page_overview():
     tot_held = int(held.sum())
     rate = lb["recap_done"].sum() / tot_held if tot_held else 0
     row1, row2 = st.columns(4), st.columns(4)
     row1[0].metric("💰 Doanh thu", fmt_vnd(lb["revenue"].sum()),
-                   help=(f"Tổng giá trị deal Won có **{(globals().get('snap') or {}).get('revField', [0, 'ngày ghi nhận doanh thu'])[1]}** "
+                   help=(f"Tổng giá trị deal Won có **{(globals().get('snap') or {}).get('revField', [0, 'ngày ghi nhận doanh số'])[1]}** "
                          f"trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", ".")
                          if (globals().get("snap") or {}).get("revField")
                          else f"Tổng giá trị deal Won có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", ".")))
@@ -1436,9 +1461,13 @@ def page_overview():
 
     st.divider()
     st.subheader("🏆 Hiệu suất theo Sale")
+    n_months = (d_end.year * 12 + d_end.month) - (d_start.year * 12 + d_start.month) + 1
+    kpi = lb["sale"].map(kpi_month).astype(float) * n_months
     view = pd.DataFrame({
         "Sale": lb["sale"],
         "Doanh thu (₫)": lb["revenue"],
+        "KPI (₫)": kpi,
+        "% KPI": (lb["revenue"] / kpi.replace(0, np.nan) * 100).round(1),
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
         "Deal mới": lb["deals_new"], "Deal won": lb["deals_won"],
@@ -1446,9 +1475,15 @@ def page_overview():
         "Meeting": lb["meetings"], "Đã recap": lb["recap_done"], "Thiếu recap": lb["recap_miss"],
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
     })
+    view["KPI (₫)"] = kpi.map(lambda v: "" if pd.isna(v) else f"{v:,.0f}")
     st.dataframe(view, hide_index=True, width="stretch", column_config={
         "Sale": st.column_config.TextColumn(pinned=True),
         "Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
+        "KPI (₫)": st.column_config.TextColumn(
+                                                 help=f"KPI doanh thu/tháng × {n_months} tháng trong kỳ" if n_months > 1
+                                                 else "KPI doanh thu của tháng"),
+        "% KPI": st.column_config.ProgressColumn("% KPI", format="%.0f%%", min_value=0, max_value=100,
+                                                 help="Doanh thu ÷ KPI (loading KPI)"),
         "Est Doanh thu": st.column_config.NumberColumn(format="localized"),
         "Thời lượng gọi": st.column_config.TextColumn(),
         "Thiếu recap": st.column_config.NumberColumn(),
@@ -1914,7 +1949,7 @@ ping();const iv=setInterval(ping,700);setTimeout(()=>{clearInterval(iv);if(!done
             if snap.get("revField"):
                 st.caption(f"Doanh thu tính theo trường: **{snap['revField'][1]}** (`{snap['revField'][0]}`).")
             else:
-                st.warning("Không tìm thấy trường **ngày ghi nhận doanh thu** của deal nên doanh thu đang tính theo ngày Won. "
+                st.warning("Không tìm thấy trường **Ngày ghi nhận doanh số** của deal nên Doanh thu và Deal won đang tính theo ngày Won. "
                            "Điền `revenue_date_field = \"Tên trường\"` vào mục `[bitrix24]` trong Secrets rồi cài lại nút. "
                            f"Các trường ngày của deal: {snap.get('revCands')}")
             if snap.get("reasonFields"):
@@ -1983,6 +2018,7 @@ if not DEMO and bitrix_mode() == "bookmarklet":
 if settings:
     pages["Cài đặt"] = settings
 pg = st.navigation(pages, position="sidebar", expanded=True)
+st.set_page_config(page_title=APP_TITLE)  # giữ tên tab trình duyệt cố định trên mọi trang
 
 st.title(f"{pg.icon} {pg.title}")
 who = ", ".join(picked) if picked and len(picked) <= 3 else f"{len(sales_in_view)} Sale"
