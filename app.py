@@ -1590,6 +1590,7 @@ def page_overview():
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
         "Deal mới": lb["deals_new"], "Deal won": lb["deals_won"],
+        "APU (₫)": (lb["revenue"] / lb["deals_won"].replace(0, np.nan)).fillna(0).round(0),
         "Cuộc gọi": lb["calls"], "Thời lượng gọi": lb["talk"].map(fmt_duration),
         "Meeting": lb["meetings"], "Đã recap": lb["recap_done"], "Thiếu recap": lb["recap_miss"],
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
@@ -1601,6 +1602,7 @@ def page_overview():
         "KPI (₫)": st.column_config.TextColumn(
                                                  help=f"KPI doanh thu/tháng × {n_months} tháng trong kỳ" if n_months > 1
                                                  else "KPI doanh thu của tháng"),
+        "APU (₫)": st.column_config.NumberColumn(format="localized", help="Doanh thu ÷ số deal won"),
         "% KPI": st.column_config.ProgressColumn("% KPI", format="%.0f%%", min_value=0, max_value=100,
                                                  help="Doanh thu ÷ KPI (loading KPI)"),
         "Est Doanh thu": st.column_config.NumberColumn(format="localized"),
@@ -1610,6 +1612,7 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
+    _render_won_breakdown()
 
 
 def page_hara():
@@ -2072,6 +2075,36 @@ def page_trends():
         st.plotly_chart(trend_chart(trend(mt), COLOR_MEETINGS, "Meeting"), width="stretch")
 
 
+def _render_won_breakdown():
+    """Bảng doanh thu/số deal won theo Source và theo Gói dịch vụ (trang Hiệu suất theo Sale)."""
+    w = data.get("won_list", pd.DataFrame(columns=WON_LIST_COLS))
+    _snap = globals().get("snap")
+    st.divider()
+    st.markdown("**II. Kết quả kinh doanh theo Source**")
+    if _snap is not None and "dwon" not in _snap:
+        st.info("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm trên Bitrix24.")
+        return
+    if w.empty:
+        st.caption("Không có deal won nào trong kỳ.")
+        return
+    team = secret("haracrm", "team", "S2.4")
+    sales_rows = [s_ for s_ in lb["sale"] if s_ in set(w["sale"])]
+    _won_pivot(w.assign(grp=w["source"].map(source_group)), "grp", SOURCE_GROUP_ORDER, sales_rows, team)
+    st.caption("PU = số deal won · RE = doanh thu. STT = Sale tự tìm · HOTLINE/CHAT = Chat, Phone · "
+               "PARTNER = Partner giới thiệu · UP SELL = Upsell · MKT = tất cả source còn lại.")
+    st.markdown("**III. Kết quả kinh doanh theo Gói dịch vụ**")
+    pk = (_snap or {}).get("pkgField")
+    if _snap is not None and not pk:
+        st.warning("Không tìm thấy trường **Gói dịch vụ** của deal trên Bitrix24. Điền "
+                   '`package_field = "Tên trường"` vào mục `[bitrix24]` trong Secrets rồi cài lại nút Cập nhật Bitrix.')
+        return
+    pk_order = list(w.groupby("package")["amount"].sum().sort_values(ascending=False).index)
+    pk_order = [p_ for p_ in pk_order if p_ != "(Chưa chọn gói)"] + [p_ for p_ in pk_order if p_ == "(Chưa chọn gói)"]
+    _won_pivot(w, "package", pk_order, sales_rows, team)
+    if pk:
+        st.caption(f"Theo trường **{pk[1]}** trên deal.")
+
+
 def _won_pivot(w: pd.DataFrame, col: str, order: list, sales_rows: list, team: str):
     """Bảng PU (số deal won) / RE (doanh thu) theo nhóm, dòng đầu là tổng team."""
     def row(df_, label):
@@ -2123,24 +2156,6 @@ def page_won_deals():
     if w.empty:
         st.info("Không có deal won nào với bộ lọc hiện tại.")
         return
-    team = secret("haracrm", "team", "S2.4")
-    sales_rows = [s_ for s_ in lb["sale"] if s_ in set(w["sale"])] if s_pick == "Tất cả" else [s_pick]
-    st.markdown("**II. Kết quả kinh doanh theo Source**")
-    _won_pivot(w.assign(grp=w["source"].map(source_group)), "grp", SOURCE_GROUP_ORDER, sales_rows, team)
-    st.caption("STT = Sale tự tìm · HOTLINE/CHAT = Chat, Phone · PARTNER = Partner giới thiệu · UP SELL = Upsell · "
-               "MKT = tất cả source còn lại.")
-    st.markdown("**III. Kết quả kinh doanh theo Gói dịch vụ**")
-    pk = (globals().get("snap") or {}).get("pkgField")
-    if _snap is not None and not pk:
-        st.warning("Không tìm thấy trường **Gói dịch vụ** của deal trên Bitrix24. Điền "
-                   '`package_field = "Tên trường"` vào mục `[bitrix24]` trong Secrets rồi cài lại nút Cập nhật Bitrix.')
-    else:
-        pk_order = list(w.groupby("package")["amount"].sum().sort_values(ascending=False).index)
-        pk_order = [p_ for p_ in pk_order if p_ != "(Chưa chọn gói)"] + [p_ for p_ in pk_order if p_ == "(Chưa chọn gói)"]
-        _won_pivot(w, "package", pk_order, sales_rows, team)
-        if pk:
-            st.caption(f"Theo trường **{pk[1]}** trên deal.")
-    st.markdown("**📋 Chi tiết từng deal**")
     view = (w.sort_values(["day", "amount"], ascending=[False, False])
             .rename(columns={"day": "Ngày ghi nhận", "sale": "Sale", "title": "Tên deal", "amount": "Số tiền (₫)",
                              "source": "Source", "link": "Link deal"})
