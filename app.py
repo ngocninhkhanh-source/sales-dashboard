@@ -742,7 +742,7 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
           "day": r[4], "link": f"https://{portal}/crm/deal/details/{r[0]}/" if portal else ""}
          for u, rows in (snap.get("dwon") or {}).items() if key2sale(u) for r in rows], columns=WON_LIST_COLS)
     won_list["day"] = pd.to_datetime(won_list["day"], errors="coerce").dt.date
-    won_list = won_list[won_list["day"].map(lambda d: isinstance(d, date) and d_start <= d <= d_end)]
+    won_list = won_list[won_list["day"].map(lambda d: isinstance(d, date) and d_start <= d <= d_end).astype(bool)]
     deal_lost = pd.DataFrame(
         [{"sale": key2sale(u), "source": r[0], "closed": r[1], "reason": r[2], "n": int(r[3])}
          for u, rows in (snap.get("dlost") or {}).items() if key2sale(u) for r in rows], columns=DEAL_LOST_COLS)
@@ -750,7 +750,7 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
     if "ldet" in snap:
         detail["created"] = pd.to_datetime(detail["created"], errors="coerce").dt.date
         m0 = datetime.now(TZ).date().replace(day=1)
-        stages = lead_stage_summary(detail[detail["created"].map(lambda d: isinstance(d, date) and d >= m0)])
+        stages = lead_stage_summary(detail[detail["created"].map(lambda d: isinstance(d, date) and d >= m0).astype(bool)])
     else:  # dữ liệu từ nút cũ: chỉ có số đếm theo stage
         stages = pd.DataFrame([{"sale": key2sale(u), "stage": cfg.get(str(k).strip().lower(), k), "n": int(n)}
                                for u, m in snap.get("stages", {}).items() if key2sale(u) for k, n in m.items()],
@@ -782,7 +782,7 @@ def is_excluded_source(src) -> bool:
 
 def lead_stage_summary(detail: pd.DataFrame) -> pd.DataFrame:
     """Số lead theo sale × stage, đã bỏ các nguồn trong lead_exclude_sources (dùng cho trang Tổng quan)."""
-    keep = detail[~detail["source"].map(is_excluded_source)] if not detail.empty else detail
+    keep = detail[~detail["source"].map(is_excluded_source).astype(bool)] if not detail.empty else detail
     return keep.groupby(["sale", "stage"], as_index=False)["n"].sum()[["sale", "stage", "n"]]
 
 def _cfg_list(v) -> list[str]:
@@ -1413,7 +1413,8 @@ if data["revenue"].empty and not globals().get("snap"):   # webhook / demo: doan
     data["revenue"] = data["deals_won"][["ts", "sale", "amount"]]
 sales_in_view = picked or roster["sale"].tolist()
 for k in data:
-    data[k] = data[k][data[k]["sale"].isin(sales_in_view)]
+    if "sale" in data[k].columns:
+        data[k] = data[k][data[k]["sale"].isin(sales_in_view)]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1556,7 +1557,7 @@ def page_overview():
                     help=f"Đã recap / meeting đã diễn ra. Thiếu recap: {fmt_int(lb['recap_miss'].sum())}")
 
     st.divider()
-    st.subheader("🏆 Hiệu suất theo Sale")
+    st.markdown("**🏆 Bảng hiệu suất từng Sale**")
     n_months = (d_end.year * 12 + d_end.month) - (d_start.year * 12 + d_start.month) + 1
     kpi = lb["sale"].map(kpi_month).astype(float) * n_months
     view = pd.DataFrame({
@@ -1587,14 +1588,14 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
-    if not DEMO:
-        _render_hara()
 
 
-def _render_hara():
-    st.divider()
+def page_hara():
+    if DEMO:
+        st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
+        return
     team = secret("haracrm", "team", "S2.4")
-    st.subheader(f"📈 Chỉ số funnel HaraCRM — team {team}")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1682,7 +1683,7 @@ def page_leads():
         else:
             t0_, t1_ = period_range(t_mode, now.date())
         t0_ = max(t0_, l_from)
-        f = f[f["created"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_)]
+        f = f[f["created"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_).astype(bool)]
         col_f3.caption(f"Từ {t0_:%d/%m/%Y} đến {min(t1_, now.date()):%d/%m/%Y}")
         tbl = (f.pivot_table(index="sale", columns="stage", values="n", aggfunc="sum")
                .reindex(index=[s_ for s_ in lb["sale"]], columns=stages).fillna(0).astype(int))
@@ -1695,7 +1696,7 @@ def page_leads():
         lost = data.get("deal_lost", pd.DataFrame(columns=DEAL_LOST_COLS))
         if picked_src:
             lost = lost[lost["source"].astype(str).isin(picked_src)]
-        lost = lost[lost["closed"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_)]
+        lost = lost[lost["closed"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_).astype(bool)]
         _render_lost_reasons(lost, selected_sale_lead, _snap)
         return
 
@@ -2180,7 +2181,7 @@ def page_hara_update():
             st.warning(f"Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm. Chi tiết: `{err}`")
         if h.get("missTabs"):
             st.warning(f"Không tìm thấy tab {h['missTabs']} trên trang HaraCRM.")
-        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
+        st.page_link(pages["Tổng quan"][1], label="→ Xem Chỉ số funnel HaraCRM", icon="📊")
     elif cur:
         at_ = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
         st.caption(f"Dữ liệu đang dùng: gửi lúc {at_:%H:%M %d/%m}, kỳ trên HaraCRM: {cur.get('filter') or 'không rõ'}.")
@@ -2322,7 +2323,7 @@ def page_bitrix_update():
         if len(empty):
             st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
                        f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
-        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
+        st.page_link(pages["Tổng quan"][0], label="→ Xem Tổng quan", icon="📊")
 
     # 2) Cài nút (một lần)
     st.divider()
@@ -2353,8 +2354,10 @@ def page_bitrix_update():
                "(xoá dấu trang cũ, kéo nút mới).")
 
 
-pages = {"Báo cáo": [
-    st.Page(page_overview, title="Tổng quan", icon="📊", default=True),
+pages = {"Tổng quan": [
+    st.Page(page_overview, title="Hiệu suất theo Sale", icon="🏆", default=True),
+    st.Page(page_hara, title="Chỉ số funnel HaraCRM", icon="📊", url_path="funnel-haracrm"),
+], "Báo cáo": [
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
     st.Page(page_meetings, title="Meeting & recap", icon="✉️", url_path="meeting-recap"),
     st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
