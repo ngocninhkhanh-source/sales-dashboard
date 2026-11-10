@@ -638,30 +638,30 @@ def _mem_store() -> dict:
     return {}
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_snapshot_drive() -> dict | None:
+def _load_snapshot_drive(name: str = SNAP_NAME) -> dict | None:
     svc = _leader_service("drive", "v3")
-    files = svc.files().list(q=f"name='{SNAP_NAME}' and trashed=false", spaces="drive",
+    files = svc.files().list(q=f"name='{name}' and trashed=false", spaces="drive",
                              orderBy="modifiedTime desc", fields="files(id)").execute().get("files", [])
     if not files:
         return None
     return json.loads(svc.files().get_media(fileId=files[0]["id"]).execute())
 
-def get_snapshot() -> tuple[dict | None, str, str]:
+def get_snapshot(name: str = SNAP_NAME) -> tuple[dict | None, str, str]:
     """(dữ liệu, nơi lưu, lỗi Drive nếu có) — lấy bản mới nhất giữa Google Drive và bộ nhớ tạm."""
     drive, err = None, ""
     if leader_mode():
         try:
-            drive = _load_snapshot_drive()
+            drive = _load_snapshot_drive(name)
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
-    mem = _mem_store().get("snap")
+    mem = _mem_store().get(name)
     if drive and (not mem or drive.get("at", 0) >= mem.get("at", 0)):
         return drive, "Google Drive", err
     return mem, ("bộ nhớ tạm" if mem else ""), err
 
-def save_snapshot(snap: dict) -> tuple[str, str]:
+def save_snapshot(snap: dict, name: str = SNAP_NAME) -> tuple[str, str]:
     """Lưu vào bộ nhớ tạm (luôn) + Google Drive của leader (nếu được). Trả về (nơi lưu, lỗi)."""
-    _mem_store()["snap"] = snap
+    _mem_store()[name] = snap
     if not leader_mode():
         return "bộ nhớ tạm", "Chưa kết nối Google của leader (trang 🔑 Kết nối Google)."
     try:
@@ -669,17 +669,31 @@ def save_snapshot(snap: dict) -> tuple[str, str]:
 
         svc = _leader_service("drive", "v3")
         media = MediaInMemoryUpload(json.dumps(snap).encode(), mimetype="application/json")
-        files = svc.files().list(q=f"name='{SNAP_NAME}' and trashed=false", spaces="drive",
+        files = svc.files().list(q=f"name='{name}' and trashed=false", spaces="drive",
                                  fields="files(id)").execute().get("files", [])
         if files:
             svc.files().update(fileId=files[0]["id"], media_body=media).execute()
         else:
-            svc.files().create(body={"name": SNAP_NAME, "mimeType": "application/json"},
+            svc.files().create(body={"name": name, "mimeType": "application/json"},
                                media_body=media, fields="id").execute()
         _load_snapshot_drive.clear()
         return "Google Drive", ""
     except Exception as e:
         return "bộ nhớ tạm", f"{type(e).__name__}: {e}"
+
+def decode_payload(raw: str, param: str = "bx") -> dict:
+    """Giải mã dữ liệu nút bookmarklet gửi sang (base64url, có thể nén deflate với tiền tố 'z')."""
+    raw = raw.strip()
+    if f"{param}=" in raw:
+        raw = raw.split(f"{param}=", 1)[1].split("&", 1)[0]
+    raw = "".join(raw.split())
+    if raw.startswith("z"):
+        import zlib
+        body = raw[1:] + "=" * (-len(raw[1:]) % 4)
+        return json.loads(zlib.decompress(base64.urlsafe_b64decode(body.encode()), -15).decode("utf-8"))
+    raw += "=" * (-len(raw) % 4)
+    return json.loads(base64.urlsafe_b64decode(raw.encode()).decode("utf-8"))
+
 
 def decode_snapshot(raw: str) -> dict:
     raw = raw.strip()
@@ -764,6 +778,56 @@ def lead_stage_summary(detail: pd.DataFrame) -> pd.DataFrame:
 
 def _cfg_list(v) -> list[str]:
     return [str(x) for x in (v if isinstance(v, (list, tuple)) else [v]) if str(x).strip()]
+
+
+HARA_SNAP = "sales-dashboard-haracrm.json"
+HARA_VERSION = 1
+HARA_SRC = r"""(async()=>{
+const C=__CFG__;
+const box=document.createElement('div');
+box.style.cssText='position:fixed;z-index:2147483647;top:16px;right:16px;width:380px;padding:16px;background:white;color:rgb(34,34,34);border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.25);font:14px/1.5 sans-serif;white-space:pre-line';
+document.body.appendChild(box);
+const say=t=>{box.innerText='📈 Cập nhật HaraCRM → Dashboard\n'+t;};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const T=e=>String((e&&(e.innerText||e.textContent))||'').replace(/\s+/g,' ').trim();
+const vis=e=>!!(e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length));
+const norm=t=>String(t||'').toLowerCase().replace(/đ/g,'d').normalize('NFD').replace(/[̀-ͯ]/g,'').split(/[^a-z0-9.]+/).filter(Boolean).join(' ');
+const names=(C.names||[]).map(norm);const team=norm(C.team);
+const hit=cells=>cells.some(c=>{const n=norm(c);return n===team||n.indexOf(team+' ')===0||names.includes(n)||names.some(x=>n.endsWith(' '+x));});
+const titleOf=t=>{let e=t;for(let i=0;i<7;i++){e=e.parentElement;if(!e)break;const hs=[...e.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(h=>!t.contains(h)&&(h.compareDocumentPosition(t)&Node.DOCUMENT_POSITION_FOLLOWING));if(hs.length){const h=hs[hs.length-1];let sub='';const nx=h.nextElementSibling;if(nx&&!nx.contains(t)&&nx.tagName!=='TABLE'){sub=T(nx).slice(0,240);}return [T(h),sub];}}return ['Bảng',''];};
+const scrape=tab=>{const out=[];for(const t of document.querySelectorAll('table')){if(!vis(t))continue;const trs=[...t.querySelectorAll('tr')];if(!trs.length)continue;const hr=t.querySelector('thead tr')||trs[0];const headers=[...hr.children].map(T);const rows=trs.filter(r=>r!==hr&&!(r.parentElement&&r.parentElement.tagName==='THEAD')).map(r=>[...r.children].map(T)).filter(c=>c.length&&hit(c));if(!rows.length)continue;const [title,sub]=titleOf(t);out.push({tab:tab,title:title,sub:sub,headers:headers,rows:rows});}return out;};
+const tabEl=name=>{const n=norm(name);return [...document.querySelectorAll('button,a,[role=tab],li,span,div')].filter(e=>vis(e)&&e.children.length<=2&&norm(T(e))===n).pop();};
+try{
+const filt=[...document.querySelectorAll('button,span,div,a')].filter(vis).map(T).find(x=>x.length<60&&/^\d{1,2}\/\d{1,2}\s*[–-]\s*\d{1,2}\/\d{1,2}/.test(x))||'';
+let tables=[];const seen=new Set();const miss=[];
+for(const name of (C.tabs||[])){const el=tabEl(name);if(!el){miss.push(name);continue;}say('Đang mở tab '+name+'…');el.click();await sleep(C.wait||2500);
+for(const x of scrape(name)){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}
+if(!C.tabs||!C.tabs.length||miss.length===C.tabs.length){for(const x of scrape('Trang hiện tại')){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}
+if(!tables.length){say('❌ Không thấy bảng nào có dòng của '+C.team+' trên trang này. Hãy mở dashboard HaraCRM, chọn bộ lọc, rồi bấm lại.');const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);return;}
+const data={v:1,kind:'hara',bv:C.bv,at:Date.now(),host:location.host,filter:filt,team:C.team,missTabs:miss,tables:tables};
+const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
+const raw=new TextEncoder().encode(JSON.stringify(data));
+let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
+const viaUrl=(C.url+'?hx='+b64).length<6000;
+say('✅ Đã đọc '+tables.length+' bảng ('+(filt||'không rõ kỳ')+').'+(miss.length?'\n⚠️ Không thấy tab: '+miss.join(', '):'')+'\nBấm nút dưới để gửi sang dashboard.');
+const btn=document.createElement('button');btn.innerText='📤 Gửi sang dashboard';btn.style.cssText='margin-top:10px;padding:8px 14px;background:rgb(42,120,214);color:white;border:0;border-radius:6px;font-weight:600;cursor:pointer';
+const ta=document.createElement('textarea');ta.value=b64;ta.readOnly=true;ta.style.cssText='display:block;width:340px;height:60px;margin-top:8px;font:11px monospace';
+const x=document.createElement('button');x.innerText='Đóng';x.style.cssText='margin:10px 0 0 10px;padding:8px 14px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';x.onclick=()=>box.remove();
+window.addEventListener('message',e=>{if(e.data==='bx-ready'&&e.source){try{e.source.postMessage({bx:b64},'*');}catch(er){}}else if(e.data==='bx-saved'){say('✅ Dashboard đã nhận dữ liệu và đang lưu. Có thể đóng khung này.');box.appendChild(x);setTimeout(()=>box.remove(),8000);}});
+btn.onclick=async()=>{window.open(viaUrl?C.url+'?hx='+b64:C.url+'?paste=1','_blank');if(viaUrl){box.remove();return;}let ok=false;try{await navigator.clipboard.writeText(b64);ok=true;}catch(e){}say('📤 Đang gửi sang dashboard (tab mới)… thường tự xong sau vài giây.\nNếu dashboard không tự lưu: '+(ok?'bấm vào ô dán trên dashboard, nhấn Cmd/Ctrl + V rồi bấm Lưu.':'bấm vào ô dưới, nhấn Cmd/Ctrl + A rồi Cmd/Ctrl + C, sang dashboard dán vào ô và bấm Lưu.'));box.appendChild(ta);ta.select();box.appendChild(x);};
+box.appendChild(btn);box.appendChild(x);
+}catch(e){say('❌ Lỗi: '+e.message);const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);}
+})();"""
+
+
+def hara_href(target_url: str, roster: pd.DataFrame) -> str:
+    from urllib.parse import quote
+
+    cfg = {"url": target_url, "team": str(secret("haracrm", "team", "S2.4")),
+           "tabs": list(secret("haracrm", "tabs", ["Điều hành", "Năng lực NV"])),
+           "names": list(roster["sale"]), "wait": int(secret("haracrm", "wait_ms", 2500)), "bv": HARA_VERSION}
+    js = "".join(HARA_SRC.splitlines()).replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
+    return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
 BOOKMARKLET_VERSION = 10  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
@@ -1186,18 +1250,8 @@ with st.sidebar:
     st.caption(f"Kỳ báo cáo: **{d_start:%d/%m/%Y} → {d_end:%d/%m/%Y}**")
     sale_slot = st.container()
 
-    st.divider()
-    st.subheader("📥 Cập nhật dữ liệu Bitrix")
-    uploaded_file = st.file_uploader("Upload file bitrix_sync_data.json", type=["json"], label_visibility="collapsed")
-    if uploaded_file is not None:
-        try:
-            st.session_state["uploaded_bitrix_data"] = json.load(uploaded_file)
-            st.success("✅ Đã nạp dữ liệu thành công!")
-            st.cache_data.clear()
-        except Exception:
-            st.error("File JSON không hợp lệ.")
-
-    if st.button("🔄 Làm mới dữ liệu", width="stretch"):
+    if st.button("🔄 Làm mới dữ liệu", width="stretch",
+                 help="Tải lại lịch, email và dữ liệu Bitrix/HaraCRM đã lưu (bỏ bộ nhớ đệm 10 phút)."):
         st.cache_data.clear()
         st.rerun()
 
@@ -1325,10 +1379,6 @@ with st.sidebar:
     st.subheader("Trạng thái kết nối")
     for k in SOURCES:
         st.markdown(f"{status[k]} &nbsp; {k}")
-    
-    sync_info = load_bitrix_from_sync_file()
-    if sync_info and isinstance(sync_info, dict):
-        st.caption(f"🕒 Bitrix Sync lần cuối:\n**{sync_info.get('updated_at', 'Chưa rõ')}**")
     
     st.caption(f"Dữ liệu cache {CACHE_TTL // 60} phút · Cập nhật: {now:%H:%M %d/%m}")
 
@@ -1517,6 +1567,40 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
+    if not DEMO:
+        _render_hara()
+
+
+def _render_hara():
+    st.divider()
+    team = secret("haracrm", "team", "S2.4")
+    st.subheader(f"📈 Chỉ số funnel HaraCRM — team {team}")
+    h, where, err = get_snapshot(HARA_SNAP)
+    if not h:
+        st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
+                "khi đang mở dashboard HaraCRM.")
+        if err:
+            st.caption(f"Google Drive: {err}")
+        return
+    at_ = datetime.fromtimestamp(h.get("at", 0) / 1000, TZ)
+    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ theo bộ lọc HaraCRM: **{h.get('filter') or 'không rõ'}** "
+               f"(không theo bộ lọc bên trái) · cập nhật {at_:%H:%M %d/%m}.")
+    for t in h.get("tables", []):
+        headers = list(t.get("headers") or [])
+        rows = [list(r) for r in t.get("rows") or []]
+        width = max([len(headers)] + [len(r) for r in rows])
+        headers += [""] * (width - len(headers))
+        cols, seen = [], {}
+        for c in headers:   # tên cột trùng/rỗng → thêm số để không lỗi
+            c = c or "—"
+            seen[c] = seen.get(c, 0) + 1
+            cols.append(c if seen[c] == 1 else f"{c} ({seen[c]})")
+        df = pd.DataFrame([r + [""] * (width - len(r)) for r in rows], columns=cols)
+        st.markdown(f"**{t.get('title') or 'Bảng'}** · _{t.get('tab', '')}_")
+        if t.get("sub"):
+            st.caption(t["sub"])
+        st.table(df.style.hide(axis="index").set_table_styles(
+            [{"selector": "th", "props": [("white-space", "normal")]}]))
 
 
 def page_leads():
@@ -1964,6 +2048,91 @@ def page_google_connect():
     st.caption("Mã này cho phép đọc lịch và hộp thư của leader — chỉ dán vào Secrets, không gửi qua chat/email.")
 
 
+HANDOFF_HTML = """<div id=m style="font:13px sans-serif;color:rgb(90,90,90)">⏳ Đang chờ dữ liệu từ tab __SRC__…</div><script>
+const P=window.parent;let done=false;
+const ping=()=>{if(done)return;for(const o of [window.top.opener,P.opener]){try{if(o)o.postMessage('bx-ready','*');}catch(e){}}};
+window.addEventListener('message',ev=>{const d=ev.data;if(done||!d||!d.bx)return;done=true;
+const doc=P.document;const ta=doc.querySelector('textarea');if(!ta){done=false;return;}
+Object.getOwnPropertyDescriptor(P.HTMLTextAreaElement.prototype,'value').set.call(ta,d.bx);
+ta.dispatchEvent(new P.Event('input',{bubbles:true}));
+document.getElementById('m').innerText='✅ Đã nhận dữ liệu từ __SRC__, đang lưu…';
+setTimeout(()=>{const b=[...doc.querySelectorAll('button')].find(x=>x.innerText.includes('Lưu dữ liệu'));if(b)b.click();try{ev.source.postMessage('bx-saved','*');}catch(e){}},600);});
+ping();const iv=setInterval(ping,700);setTimeout(()=>{clearInterval(iv);if(!done)document.getElementById('m').innerText='Không tự nhận được — dán tay theo hướng dẫn dưới.';},60000);
+</script>"""
+
+
+def page_hara_update():
+    import streamlit.components.v1 as components
+    st.markdown("Dashboard lấy các chỉ số funnel **đã tính sẵn trên HaraCRM** (salemaxcr.haracrm.com): leader mở "
+                "dashboard HaraCRM, chọn bộ lọc kỳ muốn xem, rồi bấm nút **📈 Cập nhật HaraCRM** trên thanh dấu trang. "
+                f"Nút chỉ lấy dòng của team **{secret('haracrm', 'team', 'S2.4')}** và các nhân viên trong team.")
+    incoming = st.query_params.get("hx", "")
+    paste_mode = st.query_params.get("paste", "") == "1"
+    if paste_mode:
+        components.html(HANDOFF_HTML.replace("__SRC__", "HaraCRM"), height=28)
+    pasted = ""
+    with st.expander("📋 Dán dữ liệu từ nút Cập nhật HaraCRM", expanded=paste_mode):
+        with st.form("hx_paste_form", clear_on_submit=True, border=False):
+            txt = st.text_area("Dữ liệu (nút đã tự copy sẵn — chỉ cần dán)", height=90)
+            if st.form_submit_button("💾 Lưu dữ liệu", type="primary"):
+                pasted = txt
+    raw = incoming or pasted
+    if raw:
+        try:
+            snap_h = decode_payload(raw, "hx")
+            if snap_h.get("kind") != "hara":
+                raise ValueError("Đây không phải dữ liệu của nút Cập nhật HaraCRM.")
+            where, err = save_snapshot(snap_h, HARA_SNAP)
+            st.session_state["hx_last"] = (snap_h, where, err)
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Không đọc được dữ liệu: {e}")
+        if incoming or paste_mode:
+            st.query_params.clear()
+            st.rerun()
+    cur = st.session_state["hx_last"][0] if "hx_last" in st.session_state else get_snapshot(HARA_SNAP)[0]
+    if "hx_last" in st.session_state:
+        h, where, err = st.session_state["hx_last"]
+        at_ = datetime.fromtimestamp(h["at"] / 1000, TZ)
+        st.success(f"✅ Đã nhận {len(h.get('tables', []))} bảng từ HaraCRM lúc {at_:%H:%M %d/%m} "
+                   f"(kỳ trên HaraCRM: {h.get('filter') or 'không rõ'}) — lưu tại **{where}**.")
+        if err:
+            st.warning(f"Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm. Chi tiết: `{err}`")
+        if h.get("missTabs"):
+            st.warning(f"Không tìm thấy tab {h['missTabs']} trên trang HaraCRM.")
+        st.page_link(pages["Báo cáo"][0], label="→ Xem Tổng quan", icon="📊")
+    elif cur:
+        at_ = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
+        st.caption(f"Dữ liệu đang dùng: gửi lúc {at_:%H:%M %d/%m}, kỳ trên HaraCRM: {cur.get('filter') or 'không rõ'}.")
+    if cur and cur.get("bv") != HARA_VERSION:
+        st.warning("⚠️ Dữ liệu đến từ nút cũ — xóa nút cũ, kéo nút mới bên dưới vào rồi bấm lại.")
+
+    st.divider()
+    st.subheader("Cài nút 📈 Cập nhật HaraCRM (làm 1 lần)")
+    base = secret("bitrix24", "dashboard_url") or ""
+    if not base:
+        try:
+            from urllib.parse import urlparse
+            u = urlparse(st.context.url)
+            base = f"{u.scheme}://{u.netloc}"
+        except Exception:
+            base = ""
+    href = hara_href(base.rstrip("/") + "/cap-nhat-haracrm", roster)
+    st.markdown("**Cách 1 — kéo thả:** hiện thanh dấu trang (`Cmd/Ctrl + Shift + B`), rồi **kéo nút xanh dưới đây** "
+                "thả lên thanh dấu trang.")
+    components.html(
+        f"""<a href="{href}" onclick="alert('Đừng bấm ở đây — hãy KÉO nút này lên thanh dấu trang, rồi bấm nó khi đang mở dashboard HaraCRM.');return false;"
+        style="display:inline-block;padding:10px 18px;background:rgb(42,120,214);color:white;border-radius:8px;
+        font:600 15px sans-serif;text-decoration:none;cursor:grab">📈 Cập nhật HaraCRM</a>""", height=56)
+    st.markdown("**Cách 2 — tạo tay:** chuột phải thanh dấu trang → **Thêm trang… / Add page…** → Tên: "
+                "`📈 Cập nhật HaraCRM` → ô **URL** dán toàn bộ đoạn dưới → Lưu.")
+    st.code(href, language=None, wrap_lines=True)
+    tabs_ = list(secret("haracrm", "tabs", ["Điều hành", "Năng lực NV"]))
+    st.markdown("**Mỗi lần cập nhật:** mở `salemaxcr.haracrm.com/dashboard` → chọn **bộ lọc kỳ** (ngày, vùng) muốn xem → "
+                f"bấm **📈 Cập nhật HaraCRM**. Nút tự mở lần lượt các tab {', '.join(tabs_)}, đọc các bảng có dòng "
+                "của team rồi hiện nút **📤 Gửi sang dashboard**.")
+
+
 def page_bitrix_update():
     import streamlit.components.v1 as components
     st.markdown("Công ty không cho tạo webhook, nên dashboard đọc Bitrix24 **bằng phiên đăng nhập của leader**: "
@@ -1973,17 +2142,7 @@ def page_bitrix_update():
     incoming = st.query_params.get("bx", "")
     paste_mode = st.query_params.get("paste", "") == "1"
     if paste_mode:
-        components.html("""<div id=m style="font:13px sans-serif;color:rgb(90,90,90)">⏳ Đang chờ dữ liệu từ tab Bitrix24…</div><script>
-const P=window.parent;let done=false;
-const ping=()=>{if(done)return;for(const o of [window.top.opener,P.opener]){try{if(o)o.postMessage('bx-ready','*');}catch(e){}}};
-window.addEventListener('message',ev=>{const d=ev.data;if(done||!d||!d.bx)return;done=true;
-const doc=P.document;const ta=doc.querySelector('textarea');if(!ta){done=false;return;}
-Object.getOwnPropertyDescriptor(P.HTMLTextAreaElement.prototype,'value').set.call(ta,d.bx);
-ta.dispatchEvent(new P.Event('input',{bubbles:true}));
-document.getElementById('m').innerText='✅ Đã nhận dữ liệu từ Bitrix24, đang lưu…';
-setTimeout(()=>{const b=[...doc.querySelectorAll('button')].find(x=>x.innerText.includes('Lưu dữ liệu'));if(b)b.click();try{ev.source.postMessage('bx-saved','*');}catch(e){}},600);});
-ping();const iv=setInterval(ping,700);setTimeout(()=>{clearInterval(iv);if(!done)document.getElementById('m').innerText='Không tự nhận được — dán tay theo hướng dẫn dưới.';},60000);
-</script>""", height=28)
+        components.html(HANDOFF_HTML.replace("__SRC__", "Bitrix24"), height=28)
         st.info("📋 Dữ liệu Bitrix24 đã được **copy sẵn**. Bấm vào ô dưới, nhấn **Cmd/Ctrl + V** rồi bấm **💾 Lưu dữ liệu**.")
     pasted = ""
     with st.expander("📋 Dán dữ liệu từ nút Cập nhật Bitrix", expanded=paste_mode):
@@ -2125,6 +2284,8 @@ if configured("google_oauth"):
     settings.append(st.Page(page_google_connect, title="Kết nối Google", icon="🔑", url_path="ket-noi-google"))
 if not DEMO and bitrix_mode() == "bookmarklet":
     settings.append(st.Page(page_bitrix_update, title="Cập nhật Bitrix", icon="📥", url_path="cap-nhat-bitrix"))
+if not DEMO:
+    settings.append(st.Page(page_hara_update, title="Cập nhật HaraCRM", icon="📈", url_path="cap-nhat-haracrm"))
 if settings:
     pages["Cài đặt"] = settings
 pg = st.navigation(pages, position="sidebar", expanded=True)
