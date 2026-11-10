@@ -1640,7 +1640,7 @@ def _show_reason_list(u: pd.DataFrame, fname: str, label: str):
 
 
 def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | None):
-    st.subheader("💔 Lý do Lost theo Sale")
+    st.subheader("💔 Deal | Lý do Lost theo Sale")
     if snap_ is not None and "dlost" not in snap_:
         _old_button_msg(snap_)
         return
@@ -1663,7 +1663,7 @@ def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | N
 
 def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | None):
     if snap_ is not None and "reasonField" not in snap_:
-        st.subheader("🚫 Lý do Unqualified theo Sale")
+        st.subheader("🚫 Lead | Lý do Unqualified theo Sale")
         _old_button_msg(snap_)
         return
     fields = (snap_.get("reasonFields") or ([snap_["reasonField"]] if snap_.get("reasonField") else [])
@@ -1671,7 +1671,7 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
     if snap_ is not None and snap_.get("reasonMissing"):
         st.warning(f"Không thấy trường {snap_['reasonMissing']} trên Bitrix24 — sửa `unqual_reason_field` trong Secrets.")
     if not fields:
-        st.subheader("🚫 Lý do Unqualified theo Sale")
+        st.subheader("🚫 Lead | Lý do Unqualified theo Sale")
         cands = snap_.get("reasonCands") or []
         st.warning("Chưa tìm thấy trường **lý do Unqualified** trên Bitrix24. Điền vào Secrets, mục `[bitrix24]`: "
                    '`unqual_reason_field = ["Unqualified reason", "Chi tiết unqualified"]`, rồi cài lại nút Cập nhật Bitrix.'
@@ -1683,7 +1683,7 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
         u0 = u0[u0["sale"] == selected_sale]
     order = sorted(enumerate(fields), key=lambda t: (0 if "reason" in _plain(t[1][1]) else 1, t[0]))  # "Unqualified reason" lên trước
     for idx, (code, label) in order:
-        st.subheader(f"🚫 {label} theo Sale")
+        st.subheader(f"🚫 Lead | {label} theo Sale")
         st.caption(f"Lead đang ở stage {', '.join(closed_stages)}, lấy từ trường **{label}**"
                    f"{f' (`{code}`)' if code else ''}. Áp dụng cùng bộ lọc Sale / Source / Ngày tạo ở trên.")
         if u0.empty:
