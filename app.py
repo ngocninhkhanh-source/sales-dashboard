@@ -597,7 +597,7 @@ let pkf=Object.keys(df_).find(k=>C.pkg&&(k.toLowerCase()===String(C.pkg).toLower
 if(!pkf){let best=0;for(const k of Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0)){const t=new Set(norm(dlab(k)).split(' '));const sc=(t.has('goi')?2:0)+(t.has('dich')&&t.has('vu')?2:0)+(t.has('package')?3:0);if(sc>best&&sc>=3){best=sc;pkf=k;}}}
 const pkmap={};if(pkf){const q=df_[pkf];for(const it of (q.items||[])){pkmap[String(it.ID)]=String(it.VALUE).trim();}if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){pkmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
 const pkOf=x=>{if(!pkf)return '';const v=x[pkf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>pkmap[String(z)]||String(z)).join(', ');};
-const dlost={},dwon={},warn=[];
+const dlost={},dwon={},warn=[],calls={};let callSrc='';
 const closedIds=sts.filter(x=>(C.closed||[]).some(n=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())).map(x=>x.STATUS_ID);
 const srcName={},stName={},want=[],ldet={};
 for(const x of srcs){srcName[x.STATUS_ID]=String(x.NAME).trim();}
@@ -615,11 +615,14 @@ stages[name]={};const m={};
 if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rfs)},'lead theo stage của '+name);}catch(e){if(!rfs.length)throw e;warn.push('Không đọc được trường lý do Unqualified: '+e.message);rfs=[];LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
 for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rfs.length&&closedIds.includes(x.STATUS_ID)){rs=rfs.map(k=>{const v=x[k];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>rmaps[k][String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';});}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
 ldet[name]=Object.entries(m).map(([k,v])=>JSON.parse(k).concat([v]));
+if(C.calls!==false){calls[name]={};const ct=C.callTypes||[];const addc=(d,sec)=>{if(!d)return;const c=calls[name][d]||(calls[name][d]=[0,0]);c[0]++;c[1]+=sec;};
+let got=false;if(callSrc!=='activity'){try{const CS=await all('voximplant.statistic.get',{FILTER:{PORTAL_USER_ID:u,'>=CALL_START_DATE':iso},SORT:'CALL_START_DATE',ORDER:'ASC'},'cuộc gọi của '+name);for(const x of CS){if(ct.length&&!ct.includes(+x.CALL_TYPE))continue;addc(String(x.CALL_START_DATE||'').slice(0,10),parseInt(x.CALL_DURATION)||0);}got=CS.length>0;if(got)callSrc='telephony';}catch(e){if(!callSrc)warn.push('Thống kê tổng đài: '+e.message);}}
+if(!got&&callSrc!=='telephony'){try{const AS=await all('crm.activity.list',{filter:{TYPE_ID:2,RESPONSIBLE_ID:u,'>=START_TIME':iso},select:['ID','START_TIME','END_TIME','DIRECTION'],order:{ID:'ASC'}},'cuộc gọi (CRM) của '+name);for(const x of AS){if(ct.length&&!ct.includes(+x.DIRECTION===2?1:2))continue;const a=Date.parse(x.START_TIME),b=Date.parse(x.END_TIME);addc(String(x.START_TIME||'').slice(0,10),(a&&b&&b>a)?Math.round((b-a)/1000):0);}if(AS.length){callSrc='activity';}}catch(e){warn.push('Hoạt động gọi CRM: '+e.message);}}}
 try{const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'F','>=CLOSEDATE':mFrom+'T00:00:00+07:00'},select:['ID','SOURCE_ID','CLOSEDATE'].concat(lrf?[lrf]:[])},'deal Lost của '+name);
 const lm={};for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
 dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));}catch(e){dlost[name]=[];warn.push('Deal Lost của '+name+': '+e.message);}
 }
-const data={v:7,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:8,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -734,6 +737,19 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             won += [{"ts": ts, "sale": sale, "amount": float(rev) if i == 0 else 0.0} for i in range(int(nw))]
             if float(rev):
                 revenue.append({"ts": ts, "sale": sale, "amount": float(rev)})
+    call_rows = []
+    for u, days in (snap.get("calls") or {}).items():
+        sale = key2sale(u)
+        if not sale:
+            continue
+        for day, (n, sec) in days.items():
+            try:
+                d = date.fromisoformat(day)
+            except ValueError:
+                continue
+            if d_start <= d <= d_end and int(n):
+                ts = datetime.combine(d, time(12), TZ)
+                call_rows += [{"ts": ts, "sale": sale, "duration": float(sec) / int(n)}] * int(n)
     cfg = {x.strip().lower(): x for x in lead_stage_config()[0]}  # khớp tên stage không phân biệt hoa thường
     detail = pd.DataFrame(
         [{"sale": key2sale(u), "stage": cfg.get(str(r[0]).strip().lower(), r[0]), "source": r[1], "created": r[2],
@@ -767,7 +783,8 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             "lead_stages": stages,
             "lead_detail": detail,
             "deal_lost": deal_lost,
-            "won_list": won_list}
+            "won_list": won_list,
+            **({"calls": pd.DataFrame(call_rows, columns=["ts", "sale", "duration"])} if "calls" in snap else {})}
 
 
 LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
@@ -862,7 +879,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 12  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 13  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -875,7 +892,9 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "reason": _cfg_list(secret("bitrix24", "unqual_reason_field", "")),
            "revDate": str(secret("bitrix24", "revenue_date_field", "Ngày ghi nhận doanh số") or "Ngày ghi nhận doanh số"),
            "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION,
-           "pkg": str(secret("bitrix24", "package_field", "") or "")}
+           "pkg": str(secret("bitrix24", "package_field", "") or ""),
+           "calls": bool(secret("bitrix24", "read_calls", True)),
+           "callTypes": [int(x) for x in secret("bitrix24", "call_types", [])]}
     js = "".join(BOOKMARKLET_SRC.splitlines())
     js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
@@ -1354,6 +1373,10 @@ else:
     sync_bx = None if snap else load_bitrix_from_sync_file()
     if snap:
         data.update(snapshot_frames(snap, id2sale, d_start, d_end))
+        if "calls" in snap and not configured("voicecloud"):
+            status["VoiceCloud"] = ("✅ Qua Bitrix24" + (" (tổng đài)" if snap.get("callSrc") == "telephony" else
+                                                       " (hoạt động CRM)" if snap.get("callSrc") == "activity" else
+                                                       " — chưa thấy cuộc gọi"))
         snap_at = datetime.fromtimestamp(snap["at"] / 1000, TZ)
         snap_old = now - snap_at > timedelta(hours=24)
         status["Bitrix24"] = f"{'⚠️' if snap_old else '✅'} Cập nhật {snap_at:%H:%M %d/%m}"
@@ -2415,6 +2438,15 @@ def page_bitrix_update():
                            f"Các trường ngày của deal: {snap.get('revCands')}")
             if snap.get("reasonFields"):
                 st.caption("Lý do Unqualified lấy từ: " + ", ".join(f"**{l}** (`{c}`)" for c, l in snap["reasonFields"]) + ".")
+        if "calls" in snap:
+            n_calls = sum(int(n) for m in snap["calls"].values() for n, _ in m.values())
+            src_txt = {"telephony": "thống kê tổng đài Bitrix24", "activity": "hoạt động Cuộc gọi trong CRM"}.get(
+                snap.get("callSrc"), "")
+            if n_calls:
+                st.caption(f"📞 Cuộc gọi: {n_calls:,} cuộc".replace(",", ".") + f" — đọc từ {src_txt}.")
+            else:
+                st.warning("📞 Không đọc được cuộc gọi nào trên Bitrix24 (tài khoản leader có thể không có quyền xem "
+                           "thống kê tổng đài). Xem phần lỗi bên trên nếu có.")
         if snap.get("v", 0) >= 4 and "dlost" in snap:
             if snap.get("lostField"):
                 st.caption(f"Lý do Lost lấy từ trường: **{snap['lostField'][1]}** (`{snap['lostField'][0]}`).")
