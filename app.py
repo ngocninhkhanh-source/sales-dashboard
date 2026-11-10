@@ -620,7 +620,10 @@ let pkf=Object.keys(df_).find(k=>C.pkg&&(k.toLowerCase()===String(C.pkg).toLower
 if(!pkf){let best=0;for(const k of Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0)){const t=new Set(norm(dlab(k)).split(' '));const sc=(t.has('goi')?2:0)+(t.has('dich')&&t.has('vu')?2:0)+(t.has('package')?3:0);if(sc>best&&sc>=3){best=sc;pkf=k;}}}
 const pkmap={};if(pkf){const q=df_[pkf];for(const it of (q.items||[])){pkmap[String(it.ID)]=String(it.VALUE).trim();}if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){pkmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
 const pkOf=x=>{if(!pkf)return '';const v=x[pkf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>pkmap[String(z)]||String(z)).join(', ');};
-const dlost={},dwon={},warn=[],calls={};let callSrc='';
+const dlost={},dwon={},warn=[],calls={},dopen={};let callSrc='';
+const allSt=(await call('crm.status.list',{}).catch(()=>({}))).result||[];
+const dstages=allSt.filter(x=>String(x.ENTITY_ID).indexOf('DEAL_STAGE')===0).map(x=>[String(x.STATUS_ID),String(x.NAME).trim(),+x.SORT||0,String(x.ENTITY_ID),String(x.SEMANTICS||'')]);
+const dcats={'0':'Pipeline chính'};try{for(const c of ((await call('crm.dealcategory.list',{}).catch(()=>({}))).result||[])){dcats[String(c.ID)]=String(c.NAME).trim();}}catch(e){}
 const closedIds=sts.filter(x=>(C.closed||[]).some(n=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())).map(x=>x.STATUS_ID);
 const srcName={},stName={},want=[],ldet={};
 for(const x of srcs){srcName[x.STATUS_ID]=String(x.NAME).trim();}
@@ -638,6 +641,7 @@ stages[name]={};const m={};
 if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rfs)},'lead theo stage của '+name);}catch(e){if(!rfs.length)throw e;warn.push('Không đọc được trường lý do Unqualified: '+e.message);rfs=[];LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
 for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rfs.length&&closedIds.includes(x.STATUS_ID)){rs=rfs.map(k=>{const v=x[k];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>rmaps[k][String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';});}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
 ldet[name]=Object.entries(m).map(([k,v])=>JSON.parse(k).concat([v]));
+try{const DO=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'P'},select:['ID','TITLE','STAGE_ID','CATEGORY_ID','DATE_CREATE','OPPORTUNITY']},'deal tồn của '+name);dopen[name]=DO.map(x=>[String(x.ID),String(x.TITLE||'').slice(0,120),String(x.STAGE_ID),String(x.CATEGORY_ID||'0'),String(x.DATE_CREATE||''),parseFloat(x.OPPORTUNITY)||0]);}catch(e){dopen[name]=[];warn.push('Deal tồn của '+name+': '+e.message);}
 if(C.calls!==false){calls[name]={};const ct=C.callTypes||[];const addc=(d,sec)=>{if(!d)return;const c=calls[name][d]||(calls[name][d]=[0,0]);c[0]++;c[1]+=sec;};
 let got=false;if(callSrc!=='activity'){try{const CS=await all('voximplant.statistic.get',{FILTER:{PORTAL_USER_ID:u,'>=CALL_START_DATE':iso},SORT:'CALL_START_DATE',ORDER:'ASC'},'cuộc gọi của '+name);for(const x of CS){if(ct.length&&!ct.includes(+x.CALL_TYPE))continue;addc(String(x.CALL_START_DATE||'').slice(0,10),parseInt(x.CALL_DURATION)||0);}got=CS.length>0;if(got)callSrc='telephony';}catch(e){if(!callSrc)warn.push('Thống kê tổng đài: '+e.message);}}
 if(!got&&callSrc!=='telephony'){try{const AS=await all('crm.activity.list',{filter:{TYPE_ID:2,RESPONSIBLE_ID:u,'>=START_TIME':iso},select:['ID','START_TIME','END_TIME','DIRECTION'],order:{ID:'ASC'}},'cuộc gọi (CRM) của '+name);for(const x of AS){if(ct.length&&!ct.includes(+x.DIRECTION===2?1:2))continue;const a=Date.parse(x.START_TIME),b=Date.parse(x.END_TIME);addc(String(x.START_TIME||'').slice(0,10),(a&&b&&b>a)?Math.round((b-a)/1000):0);}if(AS.length){callSrc='activity';}}catch(e){warn.push('Hoạt động gọi CRM: '+e.message);}}}
@@ -645,7 +649,7 @@ try{const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC
 const lm={};for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
 dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));}catch(e){dlost[name]=[];warn.push('Deal Lost của '+name+': '+e.message);}
 }
-const data={v:8,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:10,dopen:dopen,dstages:dstages,dcats:dcats,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -807,12 +811,46 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             "lead_detail": detail,
             "deal_lost": deal_lost,
             "won_list": won_list,
+            "deal_open": deal_open_frame(snap, key2sale),
             **({"calls": pd.DataFrame(call_rows, columns=["ts", "sale", "duration"])} if "calls" in snap else {})}
 
 
 LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
 DEAL_LOST_COLS = ["sale", "source", "closed", "reason", "n"]
 WON_LIST_COLS = ["sale", "id", "title", "amount", "source", "day", "link", "package"]
+DEAL_OPEN_COLS = ["sale", "stage_id", "stage", "cat", "order", "created", "n", "amount", "id", "title", "created_ts", "link"]
+
+
+def deal_open_frame(snap: dict, key2sale) -> pd.DataFrame:
+    """Deal đang xử lý (chưa Won/Lost) theo sale × stage × ngày tạo, tên stage và thứ tự giống Bitrix24."""
+    cats = snap.get("dcats") or {"0": "Pipeline chính"}
+    info = {}
+    for sid, name, sort, ent, *_ in snap.get("dstages") or []:
+        cat = ent.split("DEAL_STAGE_", 1)[1] if ent.startswith("DEAL_STAGE_") else "0"
+        info[sid] = (name, cat, int(sort))
+    portal = snap.get("portal") or ""
+    rows = []
+    for u, items in (snap.get("dopen") or {}).items():
+        sale = key2sale(u)
+        if not sale:
+            continue
+        for it in items:
+            if len(it) == 6:   # nút mới: mỗi deal 1 dòng
+                did, title, sid, cat, created, amt = it
+                n = 1
+            else:              # nút cũ: đã gộp theo ngày
+                sid, cat, created, n, amt = it
+                did, title = "", ""
+            name, cat2, sort = info.get(sid, (sid, cat, 9999))
+            rows.append({"sale": sale, "stage_id": sid, "stage": name, "cat": cats.get(str(cat2), f"Pipeline {cat2}"),
+                         "order": sort, "created": str(created)[:10], "n": int(n), "amount": float(amt),
+                         "id": did, "title": title, "created_ts": created,
+                         "link": f"https://{portal}/crm/deal/details/{did}/" if portal and did else ""})
+    df = pd.DataFrame(rows, columns=DEAL_OPEN_COLS)
+    df["created"] = pd.to_datetime(df["created"], errors="coerce").dt.date
+    ts = pd.to_datetime(df["created_ts"], errors="coerce", utc=True)
+    df["created_ts"] = ts.dt.tz_convert(TZ) if len(df) else ts
+    return df
 SOURCE_GROUPS_DEFAULT = {"STT": ["sale tự tìm"], "HOTLINE/CHAT": ["chat", "phone", "hotline", "điện thoại", "cuộc gọi", "call"],
                          "PARTNER": ["partner"], "UP SELL": ["up sell", "upsell"]}
 SOURCE_GROUP_ORDER = ["STT", "MKT", "HOTLINE/CHAT", "PARTNER", "UP SELL"]
@@ -902,7 +940,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 13  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 15  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1295,6 +1333,15 @@ def demo_data(d_start: date, d_end: date) -> dict:
         "calls": calls,
     }
     dw = out["deals_won"]
+    st_demo = [("SQL (Contact)", 10), ("Meeting Demo", 20), ("Negotiation", 30), ("Signed Contract", 40)]
+    r_ = np.random.default_rng(7)
+    out["deal_open"] = pd.DataFrame(
+        [{"sale": s_, "stage_id": f"S{o}", "stage": nm, "cat": "Pipeline chính", "order": o,
+          "created": (cd := today - timedelta(days=int(r_.integers(0, 120)))), "n": 1,
+          "amount": float(r_.integers(0, 30)) * 1e6, "id": str(5000 + j_), "title": f"Haravan x {r_.choice(DEMO_CLIENTS)}",
+          "created_ts": pd.Timestamp(datetime.combine(cd, time(9), TZ)), "link": ""}
+         for j_, (s_, (nm, o)) in enumerate((s_, so) for s_ in DEMO_SALES for so in st_demo for _ in range(int(r_.poisson(4))))],
+        columns=DEAL_OPEN_COLS)
     out["won_list"] = pd.DataFrame({"sale": dw["sale"].values, "id": [str(10000 + i) for i in range(len(dw))],
                                   "title": [f"Haravan x {c} – Website" for c in rng.choice(DEMO_CLIENTS, len(dw))],
                                   "amount": dw["amount"].values,
@@ -1350,6 +1397,7 @@ data = {
     "lead_detail": pd.DataFrame(columns=LEAD_DETAIL_COLS),
     "deal_lost": pd.DataFrame(columns=DEAL_LOST_COLS),
     "won_list": pd.DataFrame(columns=WON_LIST_COLS),
+    "deal_open": pd.DataFrame(columns=DEAL_OPEN_COLS),
     "deals_new": pd.DataFrame(columns=["ts", "sale"]),
     "deals_won": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "revenue": pd.DataFrame(columns=["ts", "sale", "amount"]),
@@ -1703,6 +1751,7 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1718,7 +1767,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2019,6 +2068,94 @@ def _meetings_for(d0: date, d1: date) -> pd.DataFrame:
     m = m[m["sale"].isin(sales_in_view)].copy()
     m["status"] = m.apply(recap_status, axis=1) if not m.empty else pd.Series(dtype=str)
     return m
+
+
+def page_deal_open():
+    d = data.get("deal_open", pd.DataFrame(columns=DEAL_OPEN_COLS))
+    _snap = globals().get("snap")
+    if _snap is not None and "dopen" not in _snap:
+        st.warning("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** (trang Cập nhật Bitrix) rồi bấm trên Bitrix24.")
+        return
+    st.caption("Deal **đang xử lý** (chưa Won / Lost) hiện nằm ở từng stage trên Bitrix24, tại thời điểm bấm nút cập nhật.")
+    c1, c2, c3 = st.columns([1, 1, 1])
+    s_pick = c1.selectbox("🔍 Lọc theo Sale", ["Tất cả"] + list(lb["sale"]), key="do_sale")
+    t_opts = ["Tất cả thời gian", "Hôm nay", "Hôm qua", "Tuần này", "Tháng này", "Tháng trước", "Quý này",
+              "Tùy chọn khoảng ngày"]
+    t_mode = c2.selectbox("📅 Ngày tạo deal", t_opts, key="do_time")
+    cats = list(dict.fromkeys(d["cat"])) if not d.empty else []
+    cat = c3.selectbox("🗂️ Pipeline", cats, key="do_cat") if len(cats) > 1 else (cats[0] if cats else None)
+    if cat:
+        d = d[d["cat"] == cat]
+    if s_pick != "Tất cả":
+        d = d[d["sale"] == s_pick]
+    if t_mode != "Tất cả thời gian":
+        rng_ = None
+        if t_mode == "Tùy chọn khoảng ngày":
+            rng_ = c2.date_input("Từ ngày – Đến ngày", value=(now.date() - timedelta(days=30), now.date()),
+                                 format="DD/MM/YYYY", key="do_range")
+        t0_, t1_ = period_range(t_mode, now.date(), rng_)
+        d = d[d["created"].map(lambda x: isinstance(x, date) and t0_ <= x <= t1_).astype(bool)]
+        c2.caption(f"Deal tạo từ {t0_:%d/%m/%Y} đến {t1_:%d/%m/%Y}")
+    if d.empty:
+        st.info("Không có deal tồn nào với bộ lọc hiện tại.")
+        return
+    order = (d[["stage", "order"]].drop_duplicates("stage").sort_values("order")["stage"].tolist())
+    k = st.columns(min(len(order), 6) or 1)
+    for i_, stg in enumerate(order[:6]):
+        k[i_].metric(stg, fmt_int(d.loc[d["stage"] == stg, "n"].sum()))
+    rows = [s_ for s_ in lb["sale"] if s_ in set(d["sale"])]
+    tbl = (d.pivot_table(index="sale", columns="stage", values="n", aggfunc="sum", fill_value=0)
+           .reindex(index=rows, columns=order, fill_value=0))
+    tbl["Tổng"] = tbl.sum(axis=1)
+    if len(tbl) > 1:
+        tbl.loc["TỔNG"] = tbl.sum()
+    tbl = tbl.reset_index().rename(columns={"sale": "Sale", "index": "Sale"})
+    tbl.columns.name = None
+    num = [c for c in tbl.columns if c != "Sale"]
+    tbl[num] = tbl[num].astype(int)
+    sty = (tbl.style
+           .set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
+           .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
+                  if r["Sale"] == "TỔNG" else [""] * len(r), axis=1))
+    st.caption("👆 Bấm vào một ô số để xem danh sách deal bên dưới.")
+    ev = st.dataframe(sty, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-cell",
+                      key="do_table", column_config={"Sale": st.column_config.TextColumn(pinned=True)})
+    st.download_button("⬇️ Tải bảng deal tồn (CSV)", tbl.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"deal_ton_{now:%Y%m%d}.csv", mime="text/csv")
+
+    cells = list(getattr(getattr(ev, "selection", None), "cells", []) or [])
+    if not cells:
+        return
+    r_i, col_ = cells[0][0], cells[0][1]
+    sale_ = tbl.iloc[int(r_i)]["Sale"]
+    if col_ == "Sale":
+        col_ = "Tổng"
+    lst = d.copy()
+    if sale_ != "TỔNG":
+        lst = lst[lst["sale"] == sale_]
+    if col_ != "Tổng":
+        lst = lst[lst["stage"] == col_]
+    who = "cả team" if sale_ == "TỔNG" else sale_
+    where = "tất cả stage" if col_ == "Tổng" else f"stage **{col_}**"
+    st.markdown(f"**📋 {int(lst['n'].sum())} deal tồn — {who} · {where}**")
+    if lst["id"].astype(str).eq("").all():
+        st.info("Danh sách từng deal cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm trên Bitrix24.")
+        return
+    age = (pd.Timestamp(now) - lst["created_ts"])
+    view = pd.DataFrame({
+        "Ngày tạo deal": lst["created_ts"].dt.tz_localize(None),
+        "Sale": lst["sale"], "Tên deal": lst["title"], "Stage": lst["stage"],
+        "Tồn (ngày)": (age.dt.total_seconds() / 86400).round(1),
+        "Link deal": lst["link"],
+    }).sort_values("Ngày tạo deal")
+    st.dataframe(view, hide_index=True, width="stretch", column_config={
+        "Ngày tạo deal": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
+        "Tên deal": st.column_config.TextColumn(width="large"),
+        "Tồn (ngày)": st.column_config.NumberColumn(format="%.1f ngày", help="Thời gian từ lúc tạo deal đến hiện tại"),
+        "Link deal": st.column_config.LinkColumn(display_text="Mở deal ↗"),
+    })
+    st.download_button("⬇️ Tải danh sách deal (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"deal_ton_chi_tiet_{now:%Y%m%d}.csv", mime="text/csv", key="do_list_dl")
 
 
 def page_meetings():
@@ -2540,6 +2677,7 @@ pages = {"Tổng quan": [
     st.Page(page_hara, title="Chỉ số funnel HaraCRM", icon="📊", url_path="funnel-haracrm"),
 ], "Báo cáo": [
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
+    st.Page(page_deal_open, title="Deal tồn theo stage", icon="📂", url_path="deal-ton"),
     st.Page(page_meetings, title="Meeting & recap", icon="✉️", url_path="meeting-recap"),
     st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
     st.Page(page_trends, title="Xu hướng hoạt động", icon="📈", url_path="xu-huong"),
