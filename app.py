@@ -2,7 +2,7 @@
 Dashboard Hiệu suất Sale
 ========================
 Nguồn dữ liệu:
-  • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal won , Doanh thu (tổng giá trị Deal won )
+  • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal won, Doanh thu (tổng giá trị deal won)
   • VoiceCloud      : số cuộc gọi & thời lượng gọi
   • Google Calendar : số Meeting với khách
   • Gmail           : kiểm tra email recap + Estimate doanh thu từ báo giá
@@ -559,7 +559,7 @@ else{let best=0;for(const k of dcands){const sc=dscore(k);if(sc>best){best=sc;lr
 const lmap={};
 if(lrf){const q=df_[lrf];for(const it of (q.items||[])){lmap[String(it.ID)]=String(it.VALUE).trim();}
 if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){lmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
-const dlost={};
+const dlost={},warn=[];
 const closedIds=sts.filter(x=>(C.closed||[]).some(n=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())).map(x=>x.STATUS_ID);
 const srcName={},stName={},want=[],ldet={};
 for(const x of srcs){srcName[x.STATUS_ID]=String(x.NAME).trim();}
@@ -570,22 +570,22 @@ const L=await all('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso}
 L.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),0,1));
 const D=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'deal mới của '+name);
 D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
-const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'Deal won  của '+name);
+const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal won của '+name);
 W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);});
 stages[name]={};const m={};
-if(want.length){const LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rf?[rf]:[])},'lead theo stage của '+name);
+if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rf?[rf]:[])},'lead theo stage của '+name);}catch(e){if(!rf)throw e;warn.push('Không đọc được trường lý do Unqualified: '+e.message);rf='';LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
 for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rf&&closedIds.includes(x.STATUS_ID)){const v=x[rf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>rmap[String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
 ldet[name]=Object.entries(m).map(([k,v])=>JSON.parse(k).concat([v]));
-const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'F','>=CLOSEDATE':mFrom+'T00:00:00+07:00'},select:['ID','SOURCE_ID','CLOSEDATE'].concat(lrf?[lrf]:[])},'deal Lost của '+name);
+try{const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'F','>=CLOSEDATE':mFrom+'T00:00:00+07:00'},select:['ID','SOURCE_ID','CLOSEDATE'].concat(lrf?[lrf]:[])},'deal Lost của '+name);
 const lm={};for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
-dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));
+dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));}catch(e){dlost[name]=[];warn.push('Deal Lost của '+name+': '+e.message);}
 }
-const data={v:4,ldet:ldet,ldetFrom:mFrom,reasonField:rf?[rf,lab(rf)]:null,reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:4,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rf?[rf,lab(rf)]:null,reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
 const viaUrl=(C.url+'?bx='+b64).length<6000;
-say('✅ Đã đọc xong dữ liệu Bitrix24 từ '+from.split('-').reverse().join('/')+'.\n'+(viaUrl?'Bấm nút dưới để gửi sang dashboard.':'Dữ liệu lớn: bấm nút dưới — dữ liệu được copy sẵn, trang dashboard mở ra thì bấm vào ô dán (Cmd/Ctrl + V) rồi bấm Lưu.'));
+say('✅ Đã đọc xong dữ liệu Bitrix24 từ '+from.split('-').reverse().join('/')+' (nút phiên bản '+C.bv+').\n'+(warn.length?'⚠️ '+warn.join('\n⚠️ ')+'\n':'')+(viaUrl?'Bấm nút dưới để gửi sang dashboard.':'Dữ liệu lớn: bấm nút dưới — dữ liệu được copy sẵn, trang dashboard mở ra thì bấm vào ô dán (Cmd/Ctrl + V) rồi bấm Lưu.'));
 const btn=document.createElement('button');btn.innerText='📤 Gửi sang dashboard';btn.style.cssText='margin-top:10px;padding:8px 14px;background:rgb(42,120,214);color:white;border:0;border-radius:6px;font-weight:600;cursor:pointer';
 const ta=document.createElement('textarea');ta.value=b64;ta.readOnly=true;ta.style.cssText='display:block;width:340px;height:60px;margin-top:8px;font:11px monospace';
 btn.onclick=async()=>{let ok=false;try{await navigator.clipboard.writeText(b64);ok=true;}catch(e){try{box.appendChild(ta);ta.select();ok=document.execCommand('copy');}catch(e2){}}window.open(viaUrl?C.url+'?bx='+b64:C.url+'?paste=1','_blank');if(viaUrl||ok){box.remove();}else{say('Không tự copy được. Hãy chọn hết nội dung ô dưới (Cmd/Ctrl + A), copy (Cmd/Ctrl + C) rồi dán vào trang dashboard.');box.appendChild(ta);}};
@@ -722,6 +722,9 @@ def lead_stage_summary(detail: pd.DataFrame) -> pd.DataFrame:
     keep = detail[~detail["source"].map(is_excluded_source)] if not detail.empty else detail
     return keep.groupby(["sale", "stage"], as_index=False)["n"].sum()[["sale", "stage", "n"]]
 
+BOOKMARKLET_VERSION = 5  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+
+
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
     from urllib.parse import quote
 
@@ -730,7 +733,7 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "users": [[r.bitrix_id, r.sale, r.email] for r in roster.itertuples()],
            "excl": lead_exclude_sources(), "closed": lead_stage_config()[1],
            "reason": str(secret("bitrix24", "unqual_reason_field", "") or ""),
-           "lostReason": str(secret("bitrix24", "lost_reason_field", "") or "")}
+           "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION}
     js = "".join(BOOKMARKLET_SRC.splitlines())
     js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
@@ -1389,8 +1392,8 @@ def page_overview():
     rate = lb["recap_done"].sum() / tot_held if tot_held else 0
     row1, row2 = st.columns(4), st.columns(4)
     row1[0].metric("💰 Doanh thu", fmt_vnd(lb["revenue"].sum()),
-                   help=f"Tổng giá trị Deal won  có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
-    row1[1].metric("🏆 Deal won ", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ")
+                   help=f"Tổng giá trị deal Won có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
+    row1[1].metric("🏆 Deal won", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái Won trong kỳ")
     row1[2].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
     row1[3].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
     row2[0].metric("📊 Doanh thu Est (Meeting)", fmt_vnd(lb["est_revenue"].sum()),
@@ -1407,7 +1410,7 @@ def page_overview():
         "Doanh thu (₫)": lb["revenue"],
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
-        "Deal mới": lb["deals_new"], "Deal won ": lb["deals_won"],
+        "Deal mới": lb["deals_new"], "Deal won": lb["deals_won"],
         "Cuộc gọi": lb["calls"], "Thời lượng gọi": lb["talk"].map(fmt_duration),
         "Meeting": lb["meetings"], "Đã recap": lb["recap_done"], "Thiếu recap": lb["recap_miss"],
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
@@ -1531,10 +1534,17 @@ def _show_reason_table(pv: pd.DataFrame, total_col: str, help_: str, fname: str,
     st.download_button(label, pv.to_csv(index=False).encode("utf-8-sig"), file_name=fname, mime="text/csv")
 
 
+def _old_button_msg(snap_: dict):
+    at_ = datetime.fromtimestamp(snap_.get("at", 0) / 1000, TZ)
+    st.warning(f"Dữ liệu Bitrix hiện có (gửi lúc **{at_:%H:%M %d/%m}**) đến từ **nút Cập nhật Bitrix cũ** nên chưa có phần này. "
+               "Leader làm lại: mở trang **📥 Cập nhật Bitrix** → xóa nút cũ trên thanh dấu trang → kéo nút mới vào → "
+               "mở Bitrix24, bấm nút mới → **📤 Gửi sang dashboard**.")
+
+
 def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | None):
     st.subheader("💔 Lý do Lost theo Sale")
     if snap_ is not None and "dlost" not in snap_:
-        st.info("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm nút trên Bitrix24.")
+        _old_button_msg(snap_)
         return
     if snap_ is not None and not snap_.get("lostField"):
         cands = snap_.get("lostCands") or []
@@ -1556,7 +1566,7 @@ def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | N
 def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | None):
     st.subheader("🚫 Lý do Unqualified theo Sale")
     if snap_ is not None and "reasonField" not in snap_:
-        st.info("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm nút trên Bitrix24.")
+        _old_button_msg(snap_)
         return
     if snap_ is not None and not snap_.get("reasonField"):
         cands = snap_.get("reasonCands") or []
@@ -1793,10 +1803,22 @@ def page_bitrix_update():
         if incoming or paste_mode:
             st.query_params.clear()
             st.rerun()
+    cur = (st.session_state["bx_last"][0] if "bx_last" in st.session_state
+           else (get_snapshot()[0] if bitrix_mode() == "bookmarklet" else None))
+    if cur and cur.get("bv") != BOOKMARKLET_VERSION:
+        cur_at = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
+        st.warning(f"⚠️ Dữ liệu đang dùng (gửi lúc **{cur_at:%H:%M %d/%m}**) đến từ **nút cũ** "
+                   f"(phiên bản {cur.get('bv') or cur.get('v', 1)}, mới nhất là {BOOKMARKLET_VERSION}). "
+                   "Xóa nút cũ trên thanh dấu trang, kéo nút mới ở bước 1 bên dưới vào, rồi bấm lại trên Bitrix24.")
+    elif cur:
+        cur_at = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
+        st.caption(f"Dữ liệu đang dùng: gửi lúc {cur_at:%H:%M %d/%m} bằng nút mới nhất (phiên bản {BOOKMARKLET_VERSION}).")
     if "bx_last" in st.session_state:
         snap, where, err = st.session_state["bx_last"]
         at = datetime.fromtimestamp(snap["at"] / 1000, TZ)
         st.success(f"✅ Đã nhận dữ liệu Bitrix24 lúc {at:%H:%M %d/%m/%Y} (từ {snap['from']}) — lưu tại **{where}**.")
+        for w_ in snap.get("warn") or []:
+            st.warning(f"Bitrix24 báo lỗi một phần: {w_}")
         if err:
             st.warning("Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm tới khi app khởi động lại. "
                        f"Chi tiết: `{err}`. Cách sửa: bật **Google Drive API** trong Google Cloud và vào "
@@ -1818,7 +1840,7 @@ def page_bitrix_update():
             v = np.array(list(days.values()) or [[0, 0, 0, 0]], dtype=float).sum(axis=0)
             rows.append({"Sale": r.sale,
                          "Tài khoản Bitrix": f"ID {uid} (tìm theo {how})" if uid else "❌ Không tìm thấy",
-                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "Deal won ": int(v[2]), "Doanh thu (₫)": v[3],
+                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "Deal won": int(v[2]), "Doanh thu (₫)": v[3],
                          "Lead theo stage": sum(snap["stages"].get(key, {}).values()) if key else 0})
         summary = pd.DataFrame(rows)
         st.dataframe(summary, hide_index=True, width="stretch",
@@ -1847,7 +1869,7 @@ def page_bitrix_update():
             st.error(f"Không tìm thấy tài khoản Bitrix24 của: **{', '.join(snap['unresolved'])}**. Kiểm tra `email` "
                      "trong Secrets có đúng email đăng nhập Bitrix24 không, hoặc `name` có đúng họ tên trên Bitrix24 không.")
         empty = summary[(summary["Tài khoản Bitrix"] != "❌ Không tìm thấy") &
-                        (summary[["Lead mới", "Deal mới", "Deal won ", "Lead theo stage"]].sum(axis=1) == 0)]
+                        (summary[["Lead mới", "Deal mới", "Deal won", "Lead theo stage"]].sum(axis=1) == 0)]
         if len(empty):
             st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
                        f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
