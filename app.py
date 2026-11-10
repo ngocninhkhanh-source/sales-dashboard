@@ -2334,6 +2334,45 @@ def page_all_recap_emails():
 
 
 def page_trends():
+    calls_, mts_ = data["calls"], mt
+    n_days = max(1, (min(d_end, now.date()) - d_start).days + 1)
+    rows = []
+    for s_ in list(lb["sale"]) + ["TỔNG"]:
+        c_ = calls_ if s_ == "TỔNG" else calls_[calls_["sale"] == s_]
+        m_ = mts_ if s_ == "TỔNG" else mts_[mts_["sale"] == s_]
+        talk = float(c_["duration"].sum()) if len(c_) else 0.0
+        if len(c_):
+            per_day = pd.to_datetime(c_["ts"]).dt.tz_convert(TZ).dt.date.value_counts()
+            top = f"{per_day.idxmax():%d/%m} ({int(per_day.max())})"
+        else:
+            top = "—"
+        rows.append({"Sale": s_, "Cuộc gọi": len(c_), "Thời lượng gọi": fmt_duration(talk),
+                     "TB phút/cuộc": round(talk / 60 / len(c_), 1) if len(c_) else 0.0,
+                     "TB cuộc gọi/ngày": round(len(c_) / n_days, 1), "Ngày gọi nhiều nhất": top,
+                     "Meeting": len(m_), "TB meeting/tuần": round(len(m_) / n_days * 7, 1)})
+    tb = pd.DataFrame(rows)
+    if len(tb) == 2:      # chỉ 1 sale → bỏ dòng TỔNG trùng
+        tb = tb.iloc[:1]
+    st.markdown(f"**📋 Số liệu hoạt động** · {n_days} ngày ({d_start:%d/%m} – {min(d_end, now.date()):%d/%m})")
+    st.dataframe(tb.style.apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
+                                if r["Sale"] == "TỔNG" else [""] * len(r), axis=1)
+                 ,
+                 hide_index=True, width="stretch", column_config={
+                     "Sale": st.column_config.TextColumn(pinned=True),
+                     "TB phút/cuộc": st.column_config.NumberColumn(format="%.1f"),
+                     "TB cuộc gọi/ngày": st.column_config.NumberColumn(format="%.1f",
+                                                                       help=f"Số cuộc gọi ÷ {n_days} ngày trong kỳ"),
+                     "TB meeting/tuần": st.column_config.NumberColumn(format="%.1f", help="Số meeting ÷ số ngày × 7"),
+                 })
+    with st.expander("📅 Số liệu theo từng ngày"):
+        tc, tm = trend(calls_), trend(mts_)
+        daily = pd.DataFrame({"Ngày": tc["ts"].dt.tz_localize(None), "Cuộc gọi": tc["n"].values})
+        daily = daily.merge(pd.DataFrame({"Ngày": tm["ts"].dt.tz_localize(None), "Meeting": tm["n"].values}),
+                            on="Ngày", how="outer").fillna(0)
+        daily[["Cuộc gọi", "Meeting"]] = daily[["Cuộc gọi", "Meeting"]].astype(int)
+        fmt_ = "DD/MM HH:mm" if d_start == d_end else "DD/MM/YYYY"
+        st.dataframe(daily.sort_values("Ngày", ascending=False), hide_index=True, width="stretch",
+                     column_config={"Ngày": st.column_config.DatetimeColumn(format=fmt_)})
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**📞 Số cuộc gọi**")
