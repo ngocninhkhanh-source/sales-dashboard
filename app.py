@@ -518,7 +518,7 @@ try{
 const now=new Date();const f=new Date(now.getFullYear(),now.getMonth()-C.months+1,1);
 const from=f.getFullYear()+'-'+String(f.getMonth()+1).padStart(2,'0')+'-01';
 const iso=from+'T00:00:00+07:00';
-const mFrom=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-01';
+const pm=new Date(now.getFullYear(),now.getMonth()-1,1);const mFrom=pm.getFullYear()+'-'+String(pm.getMonth()+1).padStart(2,'0')+'-01';
 const agg={},stages={};
 const add=(u,day,i,v)=>{agg[u]=agg[u]||{};agg[u][day]=agg[u][day]||[0,0,0,0];agg[u][day][i]+=v;};
 say('Đang đọc danh sách stage…');
@@ -690,7 +690,8 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
     deal_lost["closed"] = pd.to_datetime(deal_lost["closed"], errors="coerce").dt.date
     if "ldet" in snap:
         detail["created"] = pd.to_datetime(detail["created"], errors="coerce").dt.date
-        stages = lead_stage_summary(detail)
+        m0 = datetime.now(TZ).date().replace(day=1)
+        stages = lead_stage_summary(detail[detail["created"].map(lambda d: isinstance(d, date) and d >= m0)])
     else:  # dữ liệu từ nút cũ: chỉ có số đếm theo stage
         stages = pd.DataFrame([{"sale": key2sale(u), "stage": cfg.get(str(k).strip().lower(), k), "n": int(n)}
                                for u, m in snap.get("stages", {}).items() if key2sale(u) for k, n in m.items()],
@@ -722,7 +723,7 @@ def lead_stage_summary(detail: pd.DataFrame) -> pd.DataFrame:
     keep = detail[~detail["source"].map(is_excluded_source)] if not detail.empty else detail
     return keep.groupby(["sale", "stage"], as_index=False)["n"].sum()[["sale", "stage", "n"]]
 
-BOOKMARKLET_VERSION = 5  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 6  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1039,6 +1040,10 @@ def _demo_events(rng, weights: dict, days: list[date], per_day: float, hours=(8,
     return pd.DataFrame(rows, columns=["ts", "sale"])
 
 
+def _prev_month_start(d: date) -> date:
+    return (d.replace(day=1) - timedelta(days=1)).replace(day=1)
+
+
 def _demo_lead_detail(today: date) -> pd.DataFrame:
     rows = []
     srcs = ["Website", "Facebook Ads", "Hotline", "Sale tự tìm", "Partner giới thiệu", "Sự kiện"]
@@ -1052,7 +1057,7 @@ def _demo_lead_detail(today: date) -> pd.DataFrame:
                                          "F4. Khách trả lời không có nhu cầu", "B8.2. Không nghe máy"][int(r.integers(0, 5))]
                                         if st_ == "Unqualified" else ""), "n": 1})
     df = pd.DataFrame(rows, columns=LEAD_DETAIL_COLS)
-    df = df[df["created"] >= today.replace(day=1)]
+    df = df[df["created"] >= _prev_month_start(today)]
     return df.groupby(["sale", "stage", "source", "created", "reason"], as_index=False)["n"].sum()
 
 
@@ -1064,7 +1069,7 @@ def _demo_deal_lost(today: date) -> pd.DataFrame:
         r = np.random.default_rng(sum(map(ord, s_)) + 7)
         for _ in range(int(r.poisson(5))):
             rows.append({"sale": s_, "source": srcs[int(r.integers(0, 6))],
-                         "closed": today.replace(day=1) + timedelta(days=int(r.integers(0, today.day))),
+                         "closed": today - timedelta(days=int(r.integers(0, (today - _prev_month_start(today)).days + 1))),
                          "reason": reasons[int(r.integers(0, 4))], "n": 1})
     df = pd.DataFrame(rows, columns=DEAL_LOST_COLS)
     return df.groupby(["sale", "source", "closed", "reason"], as_index=False)["n"].sum()
@@ -1428,7 +1433,7 @@ def page_overview():
 
 
 def page_leads():
-    st.caption(f"Số lead **tạo trong tháng này** hiện đang nằm ở từng stage trên Bitrix24. "
+    st.caption(f"Số lead **tạo trong tháng này và tháng trước** hiện đang nằm ở từng stage trên Bitrix24. "
                f"Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
     _snap = globals().get("snap")
     if _snap and _snap.get("missingSources"):
@@ -1446,25 +1451,27 @@ def page_leads():
                                         placeholder="Tất cả source",
                                         help="Mặc định bỏ: " + (", ".join(lead_exclude_sources()) or "—")
                                              + ". Để trống = tất cả source.")
-        l_from = date.fromisoformat((_snap or {}).get("ldetFrom") or f"{now:%Y-%m}-01")
-        t_opts = ["Cả tháng này", "Hôm nay", "Hôm qua", "Tuần này", "Tùy chọn khoảng ngày"]
+        l_from = date.fromisoformat((_snap or {}).get("ldetFrom") or f"{_prev_month_start(now.date()):%Y-%m-%d}")
+        t_opts = ["Tháng này", "Tháng trước", "Cả 2 tháng", "Hôm nay", "Hôm qua", "Tuần này", "Tùy chọn khoảng ngày"]
         t_mode = col_f3.selectbox("📅 Ngày tạo lead", t_opts, key="lead_time_filter",
-                                  help=f"Chỉ lấy lead tạo từ {l_from:%d/%m/%Y} (tháng hiện tại).")
+                                  help=f"Dữ liệu có lead tạo từ {l_from:%d/%m/%Y} (tháng trước và tháng này).")
         f = detail
         if picked_src:
             f = f[f["source"].astype(str).isin(picked_src)]
-        t0_, t1_ = l_from, now.date()
-        if t_mode == "Cả tháng này":
-            col_f3.caption(f"Lead tạo từ {l_from:%d/%m/%Y} đến nay")
-        else:
-            rng_ = None
-            if t_mode == "Tùy chọn khoảng ngày":
-                rng_ = col_f3.date_input("Từ ngày – Đến ngày", value=(l_from, now.date()), min_value=l_from,
-                                         max_value=now.date(), format="DD/MM/YYYY", key="lead_time_range")
+        m0 = now.date().replace(day=1)
+        if t_mode == "Cả 2 tháng":
+            t0_, t1_ = l_from, now.date()
+        elif t_mode == "Tháng trước":
+            t0_, t1_ = _prev_month_start(now.date()), m0 - timedelta(days=1)
+        elif t_mode == "Tùy chọn khoảng ngày":
+            rng_ = col_f3.date_input("Từ ngày – Đến ngày", value=(l_from, now.date()), min_value=l_from,
+                                     max_value=now.date(), format="DD/MM/YYYY", key="lead_time_range")
             t0_, t1_ = period_range(t_mode, now.date(), rng_)
-            t0_ = max(t0_, l_from)
-            f = f[f["created"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_)]
-            col_f3.caption(f"Lead tạo từ {t0_:%d/%m/%Y} đến {t1_:%d/%m/%Y}")
+        else:
+            t0_, t1_ = period_range(t_mode, now.date())
+        t0_ = max(t0_, l_from)
+        f = f[f["created"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_)]
+        col_f3.caption(f"Từ {t0_:%d/%m/%Y} đến {min(t1_, now.date()):%d/%m/%Y}")
         tbl = (f.pivot_table(index="sale", columns="stage", values="n", aggfunc="sum")
                .reindex(index=[s_ for s_ in lb["sale"]], columns=stages).fillna(0).astype(int))
         stage_view_full = tbl.copy()
@@ -1552,7 +1559,7 @@ def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | N
                    'Điền vào Secrets, mục `[bitrix24]`: `lost_reason_field = "Tên trường"`, rồi cài lại nút Cập nhật Bitrix.'
                    + (f" Các trường tự tạo của deal: {', '.join(cands)}." if cands else ""))
     elif snap_:
-        st.caption(f"Deal thất bại (Lost) **đóng trong tháng này**, lấy lý do từ trường **{snap_['lostField'][1]}**. "
+        st.caption(f"Deal thất bại (Lost), lấy lý do từ trường **{snap_['lostField'][1]}**. "
                    "Áp dụng bộ lọc Sale / Source; bộ lọc thời gian tính theo ngày đóng deal.")
     if selected_sale != "Tất cả":
         lost = lost[lost["sale"] == selected_sale]
