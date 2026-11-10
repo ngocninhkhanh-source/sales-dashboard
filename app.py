@@ -1570,7 +1570,7 @@ def page_overview():
     row1[1].metric("🏆 Deal won", fmt_int(lb["deals_won"].sum()),
                    help=f"Deal Won có **{_rf[1]}** trong kỳ" if _rf else "Deal chuyển sang trạng thái Won trong kỳ")
     _won, _rev = int(lb["deals_won"].sum()), float(lb["revenue"].sum())
-    row1[2].metric("💎 APU", fmt_vnd(_rev / _won) if _won else "—",
+    row1[2].metric("💎 APU toàn team", fmt_vnd(_rev / _won) if _won else "—",
                    help=f"Tổng doanh thu ÷ tổng deal won của team trong kỳ: {_rev:,.0f} ₫ ÷ {_won} deal".replace(",", "."))
     row1[3].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
     row1[4].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
@@ -1598,17 +1598,34 @@ def page_overview():
         "Meeting": lb["meetings"], "Đã recap": lb["recap_done"], "Thiếu recap": lb["recap_miss"],
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
     })
-    view["KPI (₫)"] = kpi.map(lambda v: "" if pd.isna(v) else f"{v:,.0f}")
-    st.dataframe(view, hide_index=True, width="stretch", column_config={
+    if len(view) > 1:   # dòng TỔNG toàn team
+        tot = {c: view[c].sum() for c in ["Doanh thu (₫)", "Est Doanh thu", "Lead mới", "Lead tồn", "Deal mới",
+                                          "Deal won", "Cuộc gọi", "Meeting", "Đã recap", "Thiếu recap"]}
+        k_sum = kpi.sum(min_count=1)
+        held_t = tot["Đã recap"] + tot["Thiếu recap"]
+        tot.update({"Sale": "TỔNG", "KPI (₫)": k_sum,
+                    "% KPI": round(tot["Doanh thu (₫)"] / k_sum * 100, 1) if k_sum and not pd.isna(k_sum) else np.nan,
+                    "APU (₫)": round(tot["Doanh thu (₫)"] / tot["Deal won"]) if tot["Deal won"] else 0,
+                    "Thời lượng gọi": fmt_duration(lb["talk"].sum()),
+                    "Tỷ lệ recap": f"{tot['Đã recap'] / held_t:.0%}" if held_t else "—"})
+        kpi = pd.concat([kpi, pd.Series([k_sum])], ignore_index=True)
+        view = pd.concat([view, pd.DataFrame([tot])[view.columns]], ignore_index=True)
+    view["KPI (₫)"] = kpi.map(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."))
+    money = ["Doanh thu (₫)", "Est Doanh thu", "APU (₫)"]
+    st.dataframe(view.style
+                 .format(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."), subset=money)
+                 .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
+                        if r["Sale"] == "TỔNG" else [""] * len(r), axis=1),
+                 hide_index=True, width="stretch", column_config={
         "Sale": st.column_config.TextColumn(pinned=True),
-        "Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
+        "Doanh thu (₫)": st.column_config.NumberColumn(),
         "KPI (₫)": st.column_config.TextColumn(
                                                  help=f"KPI doanh thu/tháng × {n_months} tháng trong kỳ" if n_months > 1
                                                  else "KPI doanh thu của tháng"),
-        "APU (₫)": st.column_config.NumberColumn(format="localized", help="Doanh thu ÷ số deal won"),
+        "APU (₫)": st.column_config.NumberColumn(help="Doanh thu ÷ số deal won"),
         "% KPI": st.column_config.ProgressColumn("% KPI", format="%.0f%%", min_value=0, max_value=100,
                                                  help="Doanh thu ÷ KPI (loading KPI)"),
-        "Est Doanh thu": st.column_config.NumberColumn(format="localized"),
+        "Est Doanh thu": st.column_config.NumberColumn(),
         "Thời lượng gọi": st.column_config.TextColumn(),
         "Thiếu recap": st.column_config.NumberColumn(),
         "Tỷ lệ recap": st.column_config.TextColumn(),
@@ -2109,30 +2126,38 @@ def _render_won_breakdown():
 
 
 def _won_pivot(w: pd.DataFrame, col: str, order: list, sales_rows: list, team: str):
-    """Bảng PU (số deal won) / RE (doanh thu) theo nhóm, dòng đầu là tổng team."""
-    def row(df_, label):
-        r = {("", "Sale"): label, ("TỔNG", "PU"): len(df_), ("TỔNG", "All RE"): df_["amount"].sum()}
+    """Bảng PU (số deal won) / RE (doanh thu) theo nhóm, tiêu đề nhóm gộp ô; dòng đầu là tổng team."""
+    from html import escape
+    fmt = lambda v: f"{v:,.0f}".replace(",", ".")
+    groups = [("TỔNG", "All RE")] + [(g, "RE") for g in order]
+
+    def cells(df_):
+        out = [(len(df_), df_["amount"].sum(), True)]
         for g in order:
             sub = df_[df_[col] == g]
-            r[(g, "PU")] = len(sub)
-            r[(g, "RE")] = sub["amount"].sum()
-        return r
-    rows = [row(w, f"{team} (tổng)")] + [row(w[w["sale"] == s_], s_) for s_ in sales_rows]
-    df = pd.DataFrame(rows)
-    df.columns = pd.MultiIndex.from_tuples(df.columns)
-    num = [c for c in df.columns if c[1] != "Sale"]
-    disp = df.copy()
-    disp[("", "Sale")] = disp[("", "Sale")].astype(str).str.replace(" ", "\u00a0")
-    sty = (disp.style.hide(axis="index")
-           .format(lambda v: f"{v:,.0f}".replace(",", "."), subset=num)
-           .set_properties(subset=num, **{"text-align": "right"})
-           .set_properties(subset=[c for c in num if c[0] == "TỔNG"],
-                           **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
-           .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
-                  if r.name == 0 else [""] * len(r), axis=1)
-           .map_index(lambda _: "font-weight: 700; background-color: rgba(62, 180, 137, 0.18); text-align: center;",
-                      axis="columns"))
-    st.table(sty)
+            out.append((len(sub), sub["amount"].sum(), False))
+        return out
+
+    head1 = '<th rowspan="2" class="s">Sale</th>' + "".join(
+        f'<th colspan="2" class="g{" t" if i_ == 0 else ""}">{escape(str(g))}</th>' for i_, (g, _) in enumerate(groups))
+    head2 = "".join(f'<th class="{"t" if i_ == 0 else ""}">PU</th><th class="{"t" if i_ == 0 else ""}">{re_}</th>'
+                    for i_, (_, re_) in enumerate(groups))
+    body = []
+    for label, df_, cls in [(f"{team} (tổng)", w, "team")] + [(s_, w[w["sale"] == s_], "") for s_ in sales_rows]:
+        tds = "".join(f'<td class="n{" t" if tot_ else ""}">{fmt(pu)}</td><td class="n{" t" if tot_ else ""}">{fmt(re_)}</td>'
+                      for pu, re_, tot_ in cells(df_))
+        body.append(f'<tr class="{cls}"><td class="s">{escape(label)}</td>{tds}</tr>')
+    st.html(f"""<style>
+.wp{{border-collapse:collapse;width:100%;font-size:14px;font-family:inherit}}
+.wp th,.wp td{{border:1px solid rgba(128,128,128,.28);padding:6px 10px}}
+.wp th{{background:rgba(62,180,137,.18);font-weight:700;text-align:center;white-space:normal}}
+.wp th.t,.wp td.t{{background:rgba(255,193,7,.22);font-weight:700}}
+.wp td.n{{text-align:right;white-space:nowrap}}
+.wp td.s{{white-space:nowrap}}
+.wp tr.team td{{background:rgba(62,180,137,.12);font-weight:700}}
+.wp tr.team td.t{{background:rgba(255,193,7,.32)}}
+</style><div style="overflow-x:auto"><table class="wp"><thead><tr>{head1}</tr><tr>{head2}</tr></thead>
+<tbody>{"".join(body)}</tbody></table></div>""")
 
 
 def page_won_deals():
