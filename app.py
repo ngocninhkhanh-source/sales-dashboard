@@ -1680,7 +1680,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
