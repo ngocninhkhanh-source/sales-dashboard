@@ -1593,12 +1593,18 @@ def _reason_table(u: pd.DataFrame, total_col: str) -> pd.DataFrame:
 
 def _show_reason_table(pv: pd.DataFrame, total_col: str, help_: str, fname: str, label: str):
     num = [c for c in pv.columns if c != "Sale"]
-    styled = (pv.style
+    disp = pv.assign(Sale=pv["Sale"].astype(str).str.replace(" ", "\u00a0"))  # giữ tên Sale trên 1 dòng
+    styled = (disp.style
+              .hide(axis="index")
               .set_properties(subset=[total_col], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
+              .set_properties(subset=num, **{"text-align": "right"})
+              .set_table_styles([{"selector": "th", "props": [("white-space", "normal"), ("word-break", "break-word"),
+                                                               ("vertical-align", "bottom"), ("min-width", "70px")]},
+                                 {"selector": "td", "props": [("white-space", "normal")]},
+                                 {"selector": "td.col0", "props": [("white-space", "nowrap")]}])
+              .apply(lambda r: ["font-weight: bold" if r["Sale"] == "TỔNG" else "" for _ in r], axis=1)
               .format(lambda v: f"{v:,}" if v else "", subset=num))
-    st.dataframe(styled, hide_index=True, width="stretch",
-                 column_config={"Sale": st.column_config.TextColumn("Sale", pinned=True),
-                                total_col: st.column_config.NumberColumn(help=help_)})
+    st.table(styled)  # bảng thường: tiêu đề dài tự xuống hàng thay vì bị cắt
     st.download_button(label, pv.to_csv(index=False).encode("utf-8-sig"), file_name=fname, mime="text/csv")
 
 
@@ -1610,7 +1616,7 @@ def _old_button_msg(snap_: dict):
 
 
 def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | None):
-    st.subheader("💔 Lý do Lost Deal theo Sale")
+    st.subheader("💔 Lý do Lost theo Sale")
     if snap_ is not None and "dlost" not in snap_:
         _old_button_msg(snap_)
         return
