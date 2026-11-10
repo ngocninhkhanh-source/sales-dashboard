@@ -518,6 +518,7 @@ try{
 const now=new Date();const f=new Date(now.getFullYear(),now.getMonth()-C.months+1,1);
 const from=f.getFullYear()+'-'+String(f.getMonth()+1).padStart(2,'0')+'-01';
 const iso=from+'T00:00:00+07:00';
+const mFrom=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-01';
 const agg={},stages={};
 const add=(u,day,i,v)=>{agg[u]=agg[u]||{};agg[u][day]=agg[u][day]||[0,0,0,0];agg[u][day][i]+=v;};
 say('Đang đọc danh sách stage…');
@@ -549,11 +550,11 @@ D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
 const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal thắng của '+name);
 W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);});
 stages[name]={};const m={};
-if(want.length){const LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);
+if(want.length){const LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);
 for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10)]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
 ldet[name]=Object.entries(m).map(([k,v])=>JSON.parse(k).concat([v]));
 }
-const data={v:3,ldet:ldet,users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:3,ldet:ldet,ldetFrom:mFrom,users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -1010,6 +1011,7 @@ def _demo_lead_detail(today: date) -> pd.DataFrame:
                 rows.append({"sale": s_, "stage": st_, "source": srcs[int(r.choice(6, p=[.3, .25, .15, .12, .1, .08]))],
                              "created": today - timedelta(days=int(r.integers(0, 120))), "n": 1})
     df = pd.DataFrame(rows, columns=LEAD_DETAIL_COLS)
+    df = df[df["created"] >= today.replace(day=1)]
     return df.groupby(["sale", "stage", "source", "created"], as_index=False)["n"].sum()
 
 
@@ -1369,7 +1371,8 @@ def page_overview():
 
 
 def page_leads():
-    st.caption(f"Số lead hiện đang nằm ở từng stage trên Bitrix24. Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
+    st.caption(f"Số lead **tạo trong tháng này** hiện đang nằm ở từng stage trên Bitrix24. "
+               f"Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
     _snap = globals().get("snap")
     if _snap and _snap.get("missingSources"):
         st.warning(f"Không thấy nguồn {_snap['missingSources']} trên Bitrix24 — sửa dòng `lead_exclude_sources` "
@@ -1386,17 +1389,22 @@ def page_leads():
                                         placeholder="Tất cả source",
                                         help="Mặc định bỏ: " + (", ".join(lead_exclude_sources()) or "—")
                                              + ". Để trống = tất cả source.")
-        t_opts = ["Tất cả thời gian", "Hôm nay", "Hôm qua", "Tuần này", "Tháng này", "Quý này", "Tùy chọn khoảng ngày"]
-        t_mode = col_f3.selectbox("📅 Ngày tạo lead", t_opts, key="lead_time_filter")
+        l_from = date.fromisoformat((_snap or {}).get("ldetFrom") or f"{now:%Y-%m}-01")
+        t_opts = ["Cả tháng này", "Hôm nay", "Hôm qua", "Tuần này", "Tùy chọn khoảng ngày"]
+        t_mode = col_f3.selectbox("📅 Ngày tạo lead", t_opts, key="lead_time_filter",
+                                  help=f"Chỉ lấy lead tạo từ {l_from:%d/%m/%Y} (tháng hiện tại).")
         f = detail
         if picked_src:
             f = f[f["source"].astype(str).isin(picked_src)]
-        if t_mode != "Tất cả thời gian":
+        if t_mode == "Cả tháng này":
+            col_f3.caption(f"Lead tạo từ {l_from:%d/%m/%Y} đến nay")
+        else:
             rng_ = None
             if t_mode == "Tùy chọn khoảng ngày":
-                rng_ = col_f3.date_input("Từ ngày – Đến ngày", value=(now.date() - timedelta(days=30), now.date()),
+                rng_ = col_f3.date_input("Từ ngày – Đến ngày", value=(l_from, now.date()), min_value=l_from,
                                          max_value=now.date(), format="DD/MM/YYYY", key="lead_time_range")
             t0_, t1_ = period_range(t_mode, now.date(), rng_)
+            t0_ = max(t0_, l_from)
             f = f[f["created"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_)]
             col_f3.caption(f"Lead tạo từ {t0_:%d/%m/%Y} đến {t1_:%d/%m/%Y}")
         tbl = (f.pivot_table(index="sale", columns="stage", values="n", aggfunc="sum")
