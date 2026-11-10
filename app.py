@@ -781,7 +781,7 @@ def _cfg_list(v) -> list[str]:
 
 
 HARA_SNAP = "sales-dashboard-haracrm.json"
-HARA_VERSION = 1
+HARA_VERSION = 2
 HARA_SRC = r"""(async()=>{
 const C=__CFG__;
 const box=document.createElement('div');
@@ -793,17 +793,21 @@ const T=e=>String((e&&(e.innerText||e.textContent))||'').replace(/\s+/g,' ').tri
 const vis=e=>!!(e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length));
 const norm=t=>String(t||'').toLowerCase().replace(/đ/g,'d').normalize('NFD').replace(/[̀-ͯ]/g,'').split(/[^a-z0-9.]+/).filter(Boolean).join(' ');
 const names=(C.names||[]).map(norm);const team=norm(C.team);
+const roots=[];const addRoot=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*')){if(e.shadowRoot)addRoot(e.shadowRoot);if(e.tagName==='IFRAME'){try{if(e.contentDocument)addRoot(e.contentDocument);}catch(er){}}}};
+const qa=sel=>{roots.length=0;addRoot(document);return roots.flatMap(r=>[...r.querySelectorAll(sel)]);};
+const CELL='[role=cell],[role=gridcell],[role=columnheader],[role=rowheader],td,th';
 const hit=cells=>cells.some(c=>{const n=norm(c);return n===team||n.indexOf(team+' ')===0||names.includes(n)||names.some(x=>n.endsWith(' '+x));});
 const titleOf=t=>{let e=t;for(let i=0;i<7;i++){e=e.parentElement;if(!e)break;const hs=[...e.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(h=>!t.contains(h)&&(h.compareDocumentPosition(t)&Node.DOCUMENT_POSITION_FOLLOWING));if(hs.length){const h=hs[hs.length-1];let sub='';const nx=h.nextElementSibling;if(nx&&!nx.contains(t)&&nx.tagName!=='TABLE'){sub=T(nx).slice(0,240);}return [T(h),sub];}}return ['Bảng',''];};
-const scrape=tab=>{const out=[];for(const t of document.querySelectorAll('table')){if(!vis(t))continue;const trs=[...t.querySelectorAll('tr')];if(!trs.length)continue;const hr=t.querySelector('thead tr')||trs[0];const headers=[...hr.children].map(T);const rows=trs.filter(r=>r!==hr&&!(r.parentElement&&r.parentElement.tagName==='THEAD')).map(r=>[...r.children].map(T)).filter(c=>c.length&&hit(c));if(!rows.length)continue;const [title,sub]=titleOf(t);out.push({tab:tab,title:title,sub:sub,headers:headers,rows:rows});}return out;};
-const tabEl=name=>{const n=norm(name);return [...document.querySelectorAll('button,a,[role=tab],li,span,div')].filter(e=>vis(e)&&e.children.length<=2&&norm(T(e))===n).pop();};
+const scrape=tab=>{const out=[];for(const t of qa('table,[role=table],[role=grid],[role=treegrid]')){if(!vis(t)||(t.tagName!=='TABLE'&&t.querySelector('table')))continue;const isT=t.tagName==='TABLE';const trs=isT?[...t.querySelectorAll('tr')]:[...t.querySelectorAll('[role=row]')];if(!trs.length)continue;const kids=r=>isT?[...r.children]:[...r.querySelectorAll(CELL)];const hr=(isT&&t.querySelector('thead tr'))||trs.find(r=>r.querySelector('th,[role=columnheader]'))||trs[0];const headers=kids(hr).map(T);const rows=trs.filter(r=>r!==hr&&!(r.parentElement&&r.parentElement.tagName==='THEAD')).map(r=>kids(r).map(T)).filter(c=>c.length&&hit(c));if(!rows.length)continue;const [title,sub]=titleOf(t);out.push({tab:tab,title:title,sub:sub,headers:headers,rows:rows});}return out;};
+const tabEl=name=>{const n=norm(name);return qa('button,a,[role=tab],li,span,div').filter(e=>vis(e)&&e.children.length<=2&&norm(T(e))===n).pop();};
 try{
-const filt=[...document.querySelectorAll('button,span,div,a')].filter(vis).map(T).find(x=>x.length<60&&/^\d{1,2}\/\d{1,2}\s*[–-]\s*\d{1,2}\/\d{1,2}/.test(x))||'';
+const dx=qa('span,div,p').filter(vis).map(T).filter(x=>x.length<300&&x.indexOf('Đang xem')>=0).map(x=>(x.match(/Đang xem:?\s*([0-9/]+\s*[–-]\s*[0-9/]+)/)||[])[1]).find(Boolean);
+const filt=dx||qa('button,span,div,a').filter(vis).map(T).find(x=>x.length<60&&/^\d{1,2}\/\d{1,2}\s*[–-]\s*\d{1,2}\/\d{1,2}/.test(x))||'';
 let tables=[];const seen=new Set();const miss=[];
-for(const name of (C.tabs||[])){const el=tabEl(name);if(!el){miss.push(name);continue;}say('Đang mở tab '+name+'…');el.click();await sleep(C.wait||2500);
-for(const x of scrape(name)){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}
-if(!C.tabs||!C.tabs.length||miss.length===C.tabs.length){for(const x of scrape('Trang hiện tại')){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}
-if(!tables.length){say('❌ Không thấy bảng nào có dòng của '+C.team+' trên trang này. Hãy mở dashboard HaraCRM, chọn bộ lọc, rồi bấm lại.');const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);return;}
+for(const name of (C.tabs||[])){const el=tabEl(name);if(!el){miss.push(name);continue;}say('Đang mở tab '+name+'… (chờ bảng hiện ra)');el.click();let got=[];for(let i=0;i<Math.ceil((C.wait||15000)/500);i++){await sleep(500);got=scrape(name);if(got.length){await sleep(800);got=scrape(name);break;}}
+for(const x of got){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}
+if(!tables.length){for(const x of scrape('Trang hiện tại')){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}
+if(!tables.length){qa('x');const nT=qa('table').length,nR=qa('[role=table],[role=grid]').length,nI=document.querySelectorAll('iframe').length,nS=roots.length-1,has=roots.some(r=>norm(T(r.body||r)).indexOf(team)>=0);say('❌ Không thấy bảng nào có dòng của '+C.team+' trên trang này.\nChẩn đoán: bảng HTML '+nT+' · role=table '+nR+' · iframe '+nI+' · vùng con '+nS+' · thấy chữ '+C.team+': '+(has?'có':'không')+'.\nChụp khung này gửi lại để chỉnh nút.');const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);return;}
 const data={v:1,kind:'hara',bv:C.bv,at:Date.now(),host:location.host,filter:filt,team:C.team,missTabs:miss,tables:tables};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
@@ -825,7 +829,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
 
     cfg = {"url": target_url, "team": str(secret("haracrm", "team", "S2.4")),
            "tabs": list(secret("haracrm", "tabs", ["Điều hành", "Năng lực NV"])),
-           "names": list(roster["sale"]), "wait": int(secret("haracrm", "wait_ms", 2500)), "bv": HARA_VERSION}
+           "names": list(roster["sale"]), "wait": int(secret("haracrm", "wait_ms", 15000)), "bv": HARA_VERSION}
     js = "".join(HARA_SRC.splitlines()).replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
