@@ -593,6 +593,10 @@ else{let best=0;for(const k of dcands){const sc=dscore(k);if(sc>best){best=sc;lr
 const lmap={};
 if(lrf){const q=df_[lrf];for(const it of (q.items||[])){lmap[String(it.ID)]=String(it.VALUE).trim();}
 if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){lmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
+let pkf=Object.keys(df_).find(k=>C.pkg&&(k.toLowerCase()===String(C.pkg).toLowerCase()||norm(dlab(k))===norm(C.pkg)))||'';
+if(!pkf){let best=0;for(const k of Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0)){const t=new Set(norm(dlab(k)).split(' '));const sc=(t.has('goi')?2:0)+(t.has('dich')&&t.has('vu')?2:0)+(t.has('package')?3:0);if(sc>best&&sc>=3){best=sc;pkf=k;}}}
+const pkmap={};if(pkf){const q=df_[pkf];for(const it of (q.items||[])){pkmap[String(it.ID)]=String(it.VALUE).trim();}if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){pkmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
+const pkOf=x=>{if(!pkf)return '';const v=x[pkf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>pkmap[String(z)]||String(z)).join(', ');};
 const dlost={},dwon={},warn=[];
 const closedIds=sts.filter(x=>(C.closed||[]).some(n=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())).map(x=>x.STATUS_ID);
 const srcName={},stName={},want=[],ldet={};
@@ -604,9 +608,9 @@ const L=await all('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso}
 L.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),0,1));
 const D=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'deal mới của '+name);
 D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
-const W=rdf?[]:await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY','TITLE','SOURCE_ID'],order:{ID:'ASC'}},'deal won của '+name);dwon[name]=[];const wl=(x,d)=>dwon[name].push([String(x.ID),String(x.TITLE||''),parseFloat(x.OPPORTUNITY)||0,x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)',d]);
+const W=rdf?[]:await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY','TITLE','SOURCE_ID'].concat(pkf?[pkf]:[]),order:{ID:'ASC'}},'deal won của '+name);dwon[name]=[];const wl=(x,d)=>dwon[name].push([String(x.ID),String(x.TITLE||''),parseFloat(x.OPPORTUNITY)||0,x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)',d,pkOf(x)]);
 if(!rdf){W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);wl(x,day);});}
-if(rdf){const RV=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S',['>='+rdf]:from},select:['ID','OPPORTUNITY',rdf,'TITLE','SOURCE_ID'],order:{ID:'ASC'}},'doanh thu của '+name);RV.forEach(x=>{const d=String(x[rdf]||'').slice(0,10);if(d){add(name,d,2,1);add(name,d,3,parseFloat(x.OPPORTUNITY)||0);wl(x,d);}});}
+if(rdf){const RV=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S',['>='+rdf]:from},select:['ID','OPPORTUNITY',rdf,'TITLE','SOURCE_ID'].concat(pkf?[pkf]:[]),order:{ID:'ASC'}},'doanh thu của '+name);RV.forEach(x=>{const d=String(x[rdf]||'').slice(0,10);if(d){add(name,d,2,1);add(name,d,3,parseFloat(x.OPPORTUNITY)||0);wl(x,d);}});}
 stages[name]={};const m={};
 if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rfs)},'lead theo stage của '+name);}catch(e){if(!rfs.length)throw e;warn.push('Không đọc được trường lý do Unqualified: '+e.message);rfs=[];LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
 for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rfs.length&&closedIds.includes(x.STATUS_ID)){rs=rfs.map(k=>{const v=x[k];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>rmaps[k][String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';});}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
@@ -615,7 +619,7 @@ try{const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC
 const lm={};for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
 dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));}catch(e){dlost[name]=[];warn.push('Deal Lost của '+name+': '+e.message);}
 }
-const data={v:6,dwon:dwon,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:7,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -739,7 +743,8 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
     portal = snap.get("portal") or ""
     won_list = pd.DataFrame(
         [{"sale": key2sale(u), "id": r[0], "title": r[1], "amount": float(r[2]), "source": r[3],
-          "day": r[4], "link": f"https://{portal}/crm/deal/details/{r[0]}/" if portal else ""}
+          "day": r[4], "link": f"https://{portal}/crm/deal/details/{r[0]}/" if portal else "",
+          "package": (r[5] if len(r) > 5 else "") or "(Chưa chọn gói)"}
          for u, rows in (snap.get("dwon") or {}).items() if key2sale(u) for r in rows], columns=WON_LIST_COLS)
     won_list["day"] = pd.to_datetime(won_list["day"], errors="coerce").dt.date
     won_list = won_list[won_list["day"].map(lambda d: isinstance(d, date) and d_start <= d <= d_end).astype(bool)]
@@ -767,7 +772,20 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
 
 LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
 DEAL_LOST_COLS = ["sale", "source", "closed", "reason", "n"]
-WON_LIST_COLS = ["sale", "id", "title", "amount", "source", "day", "link"]
+WON_LIST_COLS = ["sale", "id", "title", "amount", "source", "day", "link", "package"]
+SOURCE_GROUPS_DEFAULT = {"STT": ["sale tự tìm"], "HOTLINE/CHAT": ["chat", "phone", "hotline", "điện thoại", "cuộc gọi", "call"],
+                         "PARTNER": ["partner"], "UP SELL": ["up sell", "upsell"]}
+SOURCE_GROUP_ORDER = ["STT", "MKT", "HOTLINE/CHAT", "PARTNER", "UP SELL"]
+
+
+def source_group(src) -> str:
+    """Nhóm source cho bảng doanh thu: STT / HOTLINE/CHAT / PARTNER / UP SELL, còn lại là MKT."""
+    groups = dict(secret("bitrix24", "source_groups") or {}) or SOURCE_GROUPS_DEFAULT
+    t = _plain(src)
+    for g, kws in groups.items():
+        if any(_plain(k) and _plain(k) in t for k in kws):
+            return g
+    return "MKT"
 
 
 def _norm_txt(t) -> str:
@@ -844,7 +862,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 11  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 12  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -856,7 +874,8 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "excl": lead_exclude_sources(), "closed": lead_stage_config()[1],
            "reason": _cfg_list(secret("bitrix24", "unqual_reason_field", "")),
            "revDate": str(secret("bitrix24", "revenue_date_field", "Ngày ghi nhận doanh số") or "Ngày ghi nhận doanh số"),
-           "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION}
+           "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION,
+           "pkg": str(secret("bitrix24", "package_field", "") or "")}
     js = "".join(BOOKMARKLET_SRC.splitlines())
     js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
@@ -1237,8 +1256,11 @@ def demo_data(d_start: date, d_end: date) -> dict:
     out["won_list"] = pd.DataFrame({"sale": dw["sale"].values, "id": [str(10000 + i) for i in range(len(dw))],
                                   "title": [f"Haravan x {c} – Website" for c in rng.choice(DEMO_CLIENTS, len(dw))],
                                   "amount": dw["amount"].values,
-                                  "source": rng.choice(["Website", "Facebook Ads", "Hotline", "Sale tự tìm"], len(dw)),
-                                  "day": dw["ts"].dt.date.values, "link": ""}, columns=WON_LIST_COLS)
+                                  "source": rng.choice(["Website", "Facebook Ads", "Hotline", "Chat", "Sale tự tìm",
+                                                        "Partner giới thiệu"], len(dw)),
+                                  "day": dw["ts"].dt.date.values, "link": "",
+                                  "package": rng.choice(["STANDARD", "PRO", "BUSINESS WEB", "OMNI ADVANCED", "GROW"], len(dw))},
+                                 columns=WON_LIST_COLS)
     return out
 # ════════════════════════════════════════════════════════════════════════════
 # SIDEBAR — BỘ LỌC & SYNC BITRIX
@@ -2050,6 +2072,33 @@ def page_trends():
         st.plotly_chart(trend_chart(trend(mt), COLOR_MEETINGS, "Meeting"), width="stretch")
 
 
+def _won_pivot(w: pd.DataFrame, col: str, order: list, sales_rows: list, team: str):
+    """Bảng PU (số deal won) / RE (doanh thu) theo nhóm, dòng đầu là tổng team."""
+    def row(df_, label):
+        r = {("", "Sale"): label, ("TỔNG", "PU"): len(df_), ("TỔNG", "All RE"): df_["amount"].sum()}
+        for g in order:
+            sub = df_[df_[col] == g]
+            r[(g, "PU")] = len(sub)
+            r[(g, "RE")] = sub["amount"].sum()
+        return r
+    rows = [row(w, f"{team} (tổng)")] + [row(w[w["sale"] == s_], s_) for s_ in sales_rows]
+    df = pd.DataFrame(rows)
+    df.columns = pd.MultiIndex.from_tuples(df.columns)
+    num = [c for c in df.columns if c[1] != "Sale"]
+    disp = df.copy()
+    disp[("", "Sale")] = disp[("", "Sale")].astype(str).str.replace(" ", "\u00a0")
+    sty = (disp.style.hide(axis="index")
+           .format(lambda v: f"{v:,.0f}".replace(",", "."), subset=num)
+           .set_properties(subset=num, **{"text-align": "right"})
+           .set_properties(subset=[c for c in num if c[0] == "TỔNG"],
+                           **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
+           .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
+                  if r.name == 0 else [""] * len(r), axis=1)
+           .map_index(lambda _: "font-weight: 700; background-color: rgba(62, 180, 137, 0.18); text-align: center;",
+                      axis="columns"))
+    st.table(sty)
+
+
 def page_won_deals():
     w = data.get("won_list", pd.DataFrame(columns=WON_LIST_COLS))
     _snap = globals().get("snap")
@@ -2074,6 +2123,24 @@ def page_won_deals():
     if w.empty:
         st.info("Không có deal won nào với bộ lọc hiện tại.")
         return
+    team = secret("haracrm", "team", "S2.4")
+    sales_rows = [s_ for s_ in lb["sale"] if s_ in set(w["sale"])] if s_pick == "Tất cả" else [s_pick]
+    st.markdown("**II. Kết quả kinh doanh theo Source**")
+    _won_pivot(w.assign(grp=w["source"].map(source_group)), "grp", SOURCE_GROUP_ORDER, sales_rows, team)
+    st.caption("STT = Sale tự tìm · HOTLINE/CHAT = Chat, Phone · PARTNER = Partner giới thiệu · UP SELL = Upsell · "
+               "MKT = tất cả source còn lại.")
+    st.markdown("**III. Kết quả kinh doanh theo Gói dịch vụ**")
+    pk = (globals().get("snap") or {}).get("pkgField")
+    if _snap is not None and not pk:
+        st.warning("Không tìm thấy trường **Gói dịch vụ** của deal trên Bitrix24. Điền "
+                   '`package_field = "Tên trường"` vào mục `[bitrix24]` trong Secrets rồi cài lại nút Cập nhật Bitrix.')
+    else:
+        pk_order = list(w.groupby("package")["amount"].sum().sort_values(ascending=False).index)
+        pk_order = [p_ for p_ in pk_order if p_ != "(Chưa chọn gói)"] + [p_ for p_ in pk_order if p_ == "(Chưa chọn gói)"]
+        _won_pivot(w, "package", pk_order, sales_rows, team)
+        if pk:
+            st.caption(f"Theo trường **{pk[1]}** trên deal.")
+    st.markdown("**📋 Chi tiết từng deal**")
     view = (w.sort_values(["day", "amount"], ascending=[False, False])
             .rename(columns={"day": "Ngày ghi nhận", "sale": "Sale", "title": "Tên deal", "amount": "Số tiền (₫)",
                              "source": "Source", "link": "Link deal"})
