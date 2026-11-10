@@ -1124,11 +1124,12 @@ def load_recap_emails(emails: tuple[str, ...], d_start: date, d_end: date, leade
                     "subject": subject_text, 
                     "rcpt": ",".join(rcpt), 
                     "est_amount": est_amount,
-                    "message_id": mid
+                    "message_id": mid,
+                    "rfc_id": h.get("message-id", "").strip().strip("<>"),
                 })
         except Exception as e:
             errors.append(f"{email}: {e}")
-    df = pd.DataFrame(rows, columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id"])
+    df = pd.DataFrame(rows, columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id", "rfc_id"])
     df["ts"] = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert(TZ)
     df.attrs["errors"] = sorted(set(errors))[:20]
     return df
@@ -1414,7 +1415,7 @@ data = {
                                       "recap_subject", "recap_by", "est_amount", "recap_delay_str", "recap_msg_id"]),
     "calls": pd.DataFrame(columns=["ts", "sale", "duration"]),
 }
-raw_emails_df = pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id"])
+raw_emails_df = pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id", "rfc_id"])
 
 
 def attempt(name: str, fn, *args):
@@ -1502,7 +1503,7 @@ else:
     if gmail_on and not roster.empty:
         senders = tuple(sorted(set(roster["email"])))
         raw_emails_df = (attempt("Gmail (recap)", load_recap_emails, senders, d_start, d_end, g_leader) if senders
-                         else pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id"]))
+                         else pd.DataFrame(columns=["sender", "ts", "subject", "rcpt", "est_amount", "message_id", "rfc_id"]))
         if raw_emails_df is not None and not mt.empty:
             rc = match_recaps(mt, raw_emails_df)
             data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id"], errors="ignore").merge(rc, on="event_id", how="left")
@@ -1760,7 +1761,6 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
-    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1776,7 +1776,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2262,6 +2262,16 @@ def page_meetings():
     )
 
 
+def gmail_link(rfc_id: str, msg_id: str = "") -> str:
+    """Link mở email trong hộp thư CỦA NGƯỜI BẤM: tìm theo Message-ID (giống nhau ở hộp thư người gửi, người nhận
+    và người được CC), nên sale bấm sẽ ra mail trong mục Đã gửi của mình, leader ra mail được CC."""
+    from urllib.parse import quote
+    rfc_id = str(rfc_id or "").strip().strip("<>")
+    if rfc_id and rfc_id.lower() != "nan":
+        return "https://mail.google.com/mail/u/0/#search/" + quote(f"rfc822msgid:{rfc_id}", safe="")
+    return f"https://mail.google.com/mail/u/0/#all/{msg_id}" if msg_id else "https://mail.google.com/"
+
+
 def page_all_recap_emails():
     st.subheader("📬 Danh sách tất cả email recap đọc từ Gmail")
     if raw_emails_df is None or raw_emails_df.empty:
@@ -2273,8 +2283,7 @@ def page_all_recap_emails():
     for em in raw_emails_df.itertuples():
         s_email = str(em.sender).lower()
         sale_name = email2sale.get(s_email, s_email)
-        msg_id = getattr(em, "message_id", "")
-        link = f"https://mail.google.com/mail/#inbox/{msg_id}" if msg_id else "https://mail.google.com/"
+        link = gmail_link(getattr(em, "rfc_id", ""), getattr(em, "message_id", ""))
         rows.append({
             "Ngày gửi recap": em.ts.tz_localize(None) if not pd.isna(em.ts) else None,
             "Sale": sale_name,
