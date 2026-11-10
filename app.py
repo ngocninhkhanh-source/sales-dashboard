@@ -146,6 +146,31 @@ def period_range(mode: str, anchor: date, custom_range: tuple[date, date] | None
     return anchor, anchor
 
 
+def period_label(d0: date, d1: date, today: date) -> str:
+    """Tên ngắn của kỳ đang xem, vd "Tháng 11", "Quý 4", "10/11", "03/11 – 09/11"."""
+    yr = lambda d: "" if d.year == today.year else f"/{d.year}"
+    month_end = (d1.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    if d0.day == 1 and d1 == month_end and (d0.year, d0.month) == (d1.year, d1.month):
+        return f"Tháng {d0.month}{yr(d0)}"
+    if (d0.day == 1 and d0.month % 3 == 1 and d1 == month_end and d1.year == d0.year
+            and d1.month == d0.month + 2):
+        return f"Quý {(d0.month - 1) // 3 + 1}{yr(d0)}"
+    if d0 == d1:
+        return f"{d0:%d/%m}{yr(d0)}"
+    return f"{d0:%d/%m} – {d1:%d/%m}{yr(d1)}"
+
+
+def _period_badge(d0: date, d1: date, today: date) -> str:
+    """Ảnh SVG chứa tên kỳ để hiện ở ô logo trên cùng thanh bên."""
+    from html import escape
+    t = escape(period_label(d0, d1, today))
+    w = max(120, 15 * len(t) + 40)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="40" viewBox="0 0 {w} 40">'
+            f'<rect x="0" y="2" width="{w}" height="36" rx="10" fill="rgb(62,180,137)"/>'
+            f'<text x="{w / 2}" y="27" text-anchor="middle" font-family="Source Sans Pro, Arial, sans-serif" '
+            f'font-size="22" font-weight="700" fill="white">📅 {t}</text></svg>')
+
+
 def to_dt_range(d_start: date, d_end: date) -> tuple[datetime, datetime]:
     return (datetime.combine(d_start, time.min, TZ),
             datetime.combine(d_end + timedelta(days=1), time.min, TZ))
@@ -1157,6 +1182,7 @@ with st.sidebar:
         )
     
     d_start, d_end = period_range(mode, anchor, custom_range)
+    st.logo(_period_badge(d_start, d_end, now.date()), size="large")  # ô trên cùng thanh bên: tên kỳ đang xem
     st.caption(f"Kỳ báo cáo: **{d_start:%d/%m/%Y} → {d_end:%d/%m/%Y}**")
     sale_slot = st.container()
 
