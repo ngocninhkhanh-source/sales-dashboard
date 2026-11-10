@@ -1761,6 +1761,7 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1776,7 +1777,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2145,7 +2146,11 @@ def page_deal_open():
         lst = lst[lst["stage"] == col_]
     who = "cả team" if sale_ == "TỔNG" else sale_
     where = "tất cả stage" if col_ == "Tổng" else f"stage **{col_}**"
-    st.markdown(f"**📋 {int(lst['n'].sum())} deal tồn — {who} · {where}**")
+    st.subheader(f"📋 {int(lst['n'].sum())} deal tồn — {who} · {where}", anchor="ds-deal-ton")
+    import streamlit.components.v1 as components
+    components.html(  # tự cuộn xuống danh sách mỗi lần bấm ô khác (nonce đổi theo ô được chọn)
+        f"""<script>/*{r_i}-{col_}*/setTimeout(()=>{{const e=window.parent.document.getElementById('ds-deal-ton');
+        if(e)e.scrollIntoView({{behavior:'smooth',block:'start'}});}},250);</script>""", height=0)
     if lst["id"].astype(str).eq("").all():
         st.info("Danh sách từng deal cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm trên Bitrix24.")
         return
@@ -2283,13 +2288,14 @@ def page_all_recap_emails():
     for em in raw_emails_df.itertuples():
         s_email = str(em.sender).lower()
         sale_name = email2sale.get(s_email, s_email)
-        link = gmail_link(getattr(em, "rfc_id", ""), getattr(em, "message_id", ""))
+        mid = str(getattr(em, "message_id", "") or "")
         rows.append({
             "Ngày gửi recap": em.ts.tz_localize(None) if not pd.isna(em.ts) else None,
             "Sale": sale_name,
             "Tiêu đề mail recap": em.subject,
             "Estimate doanh thu": em.est_amount,
-            "Mở recap": link
+            "Leader mở": f"https://mail.google.com/mail/u/0/#all/{mid}" if mid else "",
+            "Sale mở": gmail_link(getattr(em, "rfc_id", ""), mid),
         })
         
     df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
@@ -2307,7 +2313,12 @@ def page_all_recap_emails():
     st.dataframe(filtered_df, hide_index=True, width="stretch", column_config={
         "Ngày gửi recap": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
         "Estimate doanh thu": st.column_config.NumberColumn(format="localized"),
-        "Mở recap": st.column_config.LinkColumn("Mở recap", display_text="🔗 Xem chi tiết mail")
+        "Leader mở": st.column_config.LinkColumn(
+            "Mở mail (leader)", display_text="📨 Mở thẳng",
+            help="Mở thẳng email trong hộp thư leader (dashboard đọc mail từ hộp thư này)."),
+        "Sale mở": st.column_config.LinkColumn(
+            "Mở mail (sale / người nhận)", display_text="🔎 Tìm trong hộp thư",
+            help="Tìm đúng email này trong hộp thư của người bấm (mục Đã gửi của sale) — bấm vào kết quả để mở."),
     })
 
 
