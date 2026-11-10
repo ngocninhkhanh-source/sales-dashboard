@@ -1615,6 +1615,30 @@ def _old_button_msg(snap_: dict):
                "mở Bitrix24, bấm nút mới → **📤 Gửi sang dashboard**.")
 
 
+def _show_reason_list(u: pd.DataFrame, fname: str, label: str):
+    """Lý do nhập tay: mỗi lý do 1 hàng, nhóm theo Sale (thay vì mỗi lý do 1 cột)."""
+    u = u.copy()
+    u["reason"] = u["reason"].map(lambda v: " ".join(str(v).split())).replace("", "(Chưa ghi lý do)")
+    g = u.groupby(["sale", "reason"], as_index=False)["n"].sum()
+    rank = {s_: i for i, s_ in enumerate(lb["sale"])}
+    g["_s"] = g["sale"].map(rank).fillna(len(rank))
+    g["_blank"] = g["reason"].eq("(Chưa ghi lý do)")
+    g = g.sort_values(["_s", "_blank", "n", "reason"], ascending=[True, True, False, True])
+    out = g.rename(columns={"sale": "Sale", "reason": "Lý do chi tiết", "n": "Số lead"})[["Sale", "Lý do chi tiết", "Số lead"]]
+    tot = out.groupby("Sale", sort=False)["Số lead"].sum()
+    st.caption("Tổng lead Unqualified: " + " · ".join(f"**{k}** {v}" for k, v in tot.items()))
+    out = out.reset_index(drop=True)
+    disp = out.copy()
+    disp["Sale"] = disp["Sale"].astype(str).str.replace(" ", "\u00a0")
+    disp.loc[disp["Sale"].eq(disp["Sale"].shift()), "Sale"] = ""   # chỉ ghi tên Sale ở dòng đầu của nhóm
+    styled = (disp.style.hide(axis="index")
+              .set_properties(subset=["Số lead"], **{"text-align": "right", "font-weight": "bold"})
+              .set_table_styles([{"selector": "td", "props": [("white-space", "normal"), ("vertical-align", "top")]}]))
+    with st.container(height=min(600, 80 + 36 * len(disp)), border=False):
+        st.table(styled)
+    st.download_button(label, out.to_csv(index=False).encode("utf-8-sig"), file_name=fname, mime="text/csv")
+
+
 def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | None):
     st.subheader("💔 Lý do Lost theo Sale")
     if snap_ is not None and "dlost" not in snap_:
@@ -1669,8 +1693,11 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
         u["reason"] = u["reason"].map(lambda v: (v[idx] if isinstance(v, (list, tuple)) and len(v) > idx
                                                  else (v if idx == 0 and isinstance(v, str) else "")))
         safe = re.sub(r"\W+", "_", _norm_txt(label)) or f"truong_{idx + 1}"
-        _show_reason_table(_reason_table(u, "Unqual"), "Unqual", "Tổng lead Unqualified",
-                           f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)")
+        if "chi tiet" in _plain(label) or "DETAIL" in str(code).upper():   # lý do sale tự nhập tay → liệt kê theo hàng
+            _show_reason_list(u, f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)")
+        else:
+            _show_reason_table(_reason_table(u, "Unqual"), "Unqual", "Tổng lead Unqualified",
+                               f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)")
 
 
 def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
