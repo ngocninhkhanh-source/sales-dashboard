@@ -2,7 +2,7 @@
 Dashboard Hiệu suất Sale
 ========================
 Nguồn dữ liệu:
-  • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, deal won, Doanh thu (tổng giá trị deal won)
+  • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal won , Doanh thu (tổng giá trị Deal won )
   • VoiceCloud      : số cuộc gọi & thời lượng gọi
   • Google Calendar : số Meeting với khách
   • Gmail           : kiểm tra email recap + Estimate doanh thu từ báo giá
@@ -570,7 +570,7 @@ const L=await all('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso}
 L.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),0,1));
 const D=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'deal mới của '+name);
 D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
-const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal won của '+name);
+const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'Deal won  của '+name);
 W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);});
 stages[name]={};const m={};
 if(want.length){const LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rf?[rf]:[])},'lead theo stage của '+name);
@@ -1389,8 +1389,8 @@ def page_overview():
     rate = lb["recap_done"].sum() / tot_held if tot_held else 0
     row1, row2 = st.columns(4), st.columns(4)
     row1[0].metric("💰 Doanh thu", fmt_vnd(lb["revenue"].sum()),
-                   help=f"Tổng giá trị deal Won có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
-    row1[1].metric("🏆 deal won", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ")
+                   help=f"Tổng giá trị Deal won  có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
+    row1[1].metric("🏆 Deal won ", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ")
     row1[2].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
     row1[3].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
     row2[0].metric("📊 Doanh thu Est (Meeting)", fmt_vnd(lb["est_revenue"].sum()),
@@ -1407,7 +1407,7 @@ def page_overview():
         "Doanh thu (₫)": lb["revenue"],
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
-        "Deal mới": lb["deals_new"], "deal won": lb["deals_won"],
+        "Deal mới": lb["deals_new"], "Deal won ": lb["deals_won"],
         "Cuộc gọi": lb["calls"], "Thời lượng gọi": lb["talk"].map(fmt_duration),
         "Meeting": lb["meetings"], "Đã recap": lb["recap_done"], "Thiếu recap": lb["recap_miss"],
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
@@ -1818,7 +1818,7 @@ def page_bitrix_update():
             v = np.array(list(days.values()) or [[0, 0, 0, 0]], dtype=float).sum(axis=0)
             rows.append({"Sale": r.sale,
                          "Tài khoản Bitrix": f"ID {uid} (tìm theo {how})" if uid else "❌ Không tìm thấy",
-                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "deal won": int(v[2]), "Doanh thu (₫)": v[3],
+                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "Deal won ": int(v[2]), "Doanh thu (₫)": v[3],
                          "Lead theo stage": sum(snap["stages"].get(key, {}).values()) if key else 0})
         summary = pd.DataFrame(rows)
         st.dataframe(summary, hide_index=True, width="stretch",
@@ -1847,7 +1847,7 @@ def page_bitrix_update():
             st.error(f"Không tìm thấy tài khoản Bitrix24 của: **{', '.join(snap['unresolved'])}**. Kiểm tra `email` "
                      "trong Secrets có đúng email đăng nhập Bitrix24 không, hoặc `name` có đúng họ tên trên Bitrix24 không.")
         empty = summary[(summary["Tài khoản Bitrix"] != "❌ Không tìm thấy") &
-                        (summary[["Lead mới", "Deal mới", "deal won", "Lead theo stage"]].sum(axis=1) == 0)]
+                        (summary[["Lead mới", "Deal mới", "Deal won ", "Lead theo stage"]].sum(axis=1) == 0)]
         if len(empty):
             st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
                        f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
