@@ -2112,8 +2112,11 @@ def page_deal_open():
     sty = (tbl.style
            .set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
            .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
-                  if r["Sale"] == "TỔNG" else [""] * len(r), axis=1))
-    st.caption("👆 Bấm vào một ô số để xem danh sách deal bên dưới.")
+                  if r["Sale"] == "TỔNG" else [""] * len(r), axis=1)
+           # số bấm được: chữ xanh như link; ô 0 làm mờ
+           .map(lambda v: "color: rgb(28, 131, 225); font-weight: 700;" if v else "color: rgba(128, 128, 128, 0.55);",
+                subset=num))
+    st.info("Bấm vào **ô số màu xanh** để xem danh sách deal ngay bên dưới bảng.", icon=":material/touch_app:")
     ev = st.dataframe(sty, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-cell",
                       key="do_table", column_config={"Sale": st.column_config.TextColumn(pinned=True)})
     st.download_button("⬇️ Tải bảng deal tồn (CSV)", tbl.to_csv(index=False).encode("utf-8-sig"),
