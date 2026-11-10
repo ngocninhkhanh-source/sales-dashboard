@@ -1570,7 +1570,7 @@ def page_overview():
     row1[1].metric("🏆 Deal won", fmt_int(lb["deals_won"].sum()),
                    help=f"Deal Won có **{_rf[1]}** trong kỳ" if _rf else "Deal chuyển sang trạng thái Won trong kỳ")
     _won, _rev = int(lb["deals_won"].sum()), float(lb["revenue"].sum())
-    row1[2].metric("💎 APU toàn team", fmt_vnd(_rev / _won) if _won else "—",
+    row1[2].metric("💎 APU", fmt_vnd(_rev / _won) if _won else "—",
                    help=f"Tổng doanh thu ÷ tổng deal won của team trong kỳ: {_rev:,.0f} ₫ ÷ {_won} deal".replace(",", "."))
     row1[3].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
     row1[4].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
