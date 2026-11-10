@@ -1741,61 +1741,111 @@ def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
     )
 
 
-def page_meetings():
-    k = st.columns(5)
-    k[0].metric("📅 Meeting", fmt_int(lb["meetings"].sum()))
-    k[1].metric("✅ Đã recap", fmt_int(lb["recap_done"].sum()))
-    k[2].metric("❌ Thiếu recap", fmt_int(lb["recap_miss"].sum()))
-    tot = int(held.sum())
-    k[3].metric("✉️ Tỷ lệ recap", f"{lb['recap_done'].sum() / tot:.0%}" if tot else "—")
-    k[4].metric("💰 Tổng Est", fmt_vnd(mt["est_amount"].sum()))
-    
-    order = [ST_DONE, ST_MISS, ST_UPCOMING, ST_UNKNOWN]
-    present = [s for s in order if st_counts.get(s, pd.Series(dtype=int)).sum() > 0]
-    if mt.empty:
-        st.caption("Không có meeting nào trong kỳ.")
+def _meetings_for(d0: date, d1: date) -> pd.DataFrame:
+    """Meeting + trạng thái recap cho khoảng ngày riêng của trang Meeting (khác kỳ ở thanh bên)."""
+    if DEMO:
+        m = demo_data(d0, d1)["meetings"]
     else:
-        stack = (st_counts.reindex(index=lb.sort_values("meetings")["sale"], fill_value=0)[present]
-                 .reset_index().melt(id_vars="sale", var_name="Trạng thái", value_name="Số meeting"))
-        
-        chart_height = max(220, min(350, 45 * len(present) + 80))
-        fig = px.bar(
-            stack, x="Số meeting", y="sale", color="Trạng thái", orientation="h",
-            color_discrete_map=STATUS_COLORS, category_orders={"Trạng thái": present},
-            labels={"sale": "", "Số meeting": "Số lượng", "Trạng thái": ""}
-        )
-        fig.update_traces(marker=dict(line=dict(width=0)), hovertemplate="<b>%{y}</b><br>%{fullData.name}: <b>%{x}</b> meeting<extra></extra>")
-        fig.update_layout(
-            height=chart_height, margin=dict(l=10, r=20, t=20, b=10),
-            barmode="stack", bargap=0.4, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None, font=dict(size=12)),
-            xaxis=dict(showgrid=True, gridcolor="rgba(200, 200, 200, 0.2)", zeroline=False),
-            yaxis=dict(showgrid=False, categoryorder="total ascending")
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if not ((g_leader or g_sa) and not roster.empty):
+            return mt.iloc[0:0]
+        m = (load_meetings_leader if g_leader else load_meetings)(
+            tuple(roster["email"]), tuple(roster["sale"]), d0, d1)
+        m = m.assign(recap=pd.NA, est_amount=0.0, recap_delay_str="—", recap_msg_id="")
+        if gmail_on and not m.empty:
+            em = load_recap_emails(tuple(sorted(set(roster["email"]))), d0, d1, g_leader)
+            if em is not None:
+                rc = match_recaps(m, em)
+                m = m.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id"],
+                           errors="ignore").merge(rc, on="event_id", how="left")
+    m = m[m["sale"].isin(sales_in_view)].copy()
+    m["status"] = m.apply(recap_status, axis=1) if not m.empty else pd.Series(dtype=str)
+    return m
 
-        st.markdown("**📋 Chi tiết từng meeting**")
-        pick = st.pills("Lọc trạng thái", present, selection_mode="multi",
-                        default=[s for s in (ST_MISS, ST_DONE) if s in present] or present, label_visibility="collapsed")
-        detail = mt[mt["status"].isin(pick or present)].sort_values("ts", ascending=False)
-        st.dataframe(
-            pd.DataFrame({
-                "Thời gian": detail["ts"].dt.tz_localize(None), 
-                "Sale": detail["sale"], 
-                "Meeting": detail["title"],
-                "Khách": detail["guests"], 
-                "Trạng thái recap": detail["status"],
-                "Email recap": detail.get("recap_subject", pd.Series("", index=detail.index)).fillna(""),
-                "Thời gian gửi recap sau meeting": detail.get("recap_delay_str", pd.Series("—", index=detail.index)),
-                "Est Doanh thu (₫)": detail.get("est_amount", pd.Series(0, index=detail.index)),
-                "Khớp theo": detail.get("recap_by", pd.Series("", index=detail.index)).fillna(""),
-            }),
-            hide_index=True, width="stretch",
-            column_config={
-                "Thời gian": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
-                "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
-            },
-        )
+
+def page_meetings():
+    c1, c2 = st.columns([1, 1])
+    sale_opts = ["Tất cả"] + list(lb["sale"])
+    m_sale = c1.selectbox("🔍 Lọc theo Sale", sale_opts, key="mt_sale_filter")
+    t_opts = ["Theo kỳ ở thanh bên", "Hôm nay", "Hôm qua", "Tuần này", "Tháng này", "Tháng trước", "Quý này",
+              "Tùy chọn khoảng ngày"]
+    m_time = c2.selectbox("📅 Thời gian meeting", t_opts, key="mt_time_filter")
+    if m_time == "Theo kỳ ở thanh bên":
+        m0, m1, mm = d_start, d_end, mt
+    else:
+        rng_ = None
+        if m_time == "Tùy chọn khoảng ngày":
+            rng_ = c2.date_input("Từ ngày – Đến ngày", value=(now.date() - timedelta(days=7), now.date()),
+                                 format="DD/MM/YYYY", key="mt_time_range")
+        m0, m1 = period_range(m_time, now.date(), rng_)
+        try:
+            mm = _meetings_for(m0, m1)
+        except Exception as e:
+            st.warning(f"Không tải được meeting cho khoảng ngày này: {type(e).__name__}: {e}")
+            mm = mt.iloc[0:0]
+    c2.caption(f"Từ {m0:%d/%m/%Y} đến {m1:%d/%m/%Y}")
+    if m_sale != "Tất cả":
+        mm = mm[mm["sale"] == m_sale]
+
+    cnt = mm["status"].value_counts() if not mm.empty else pd.Series(dtype=int)
+    done, miss = int(cnt.get(ST_DONE, 0)), int(cnt.get(ST_MISS, 0))
+    k = st.columns(5)
+    k[0].metric("📅 Meeting", fmt_int(len(mm)))
+    k[1].metric("✅ Đã recap", fmt_int(done))
+    k[2].metric("❌ Thiếu recap", fmt_int(miss))
+    k[3].metric("✉️ Tỷ lệ recap", f"{done / (done + miss):.0%}" if done + miss else "—")
+    k[4].metric("💰 Tổng Est", fmt_vnd(mm["est_amount"].sum() if "est_amount" in mm else 0))
+
+    order = [ST_DONE, ST_MISS, ST_UPCOMING, ST_UNKNOWN]
+    present = [s for s in order if cnt.get(s, 0) > 0]
+    if mm.empty:
+        st.caption("Không có meeting nào với bộ lọc hiện tại.")
+        return
+    counts = mm.groupby(["sale", "status"]).size().unstack(fill_value=0)
+    sales_order = [s_ for s_ in lb["sale"] if s_ in counts.index]
+    stack = (counts.reindex(index=sales_order, columns=present, fill_value=0)
+             .reset_index().melt(id_vars="sale", var_name="Trạng thái", value_name="Số meeting"))
+
+    chart_height = max(220, min(350, 45 * len(sales_order) + 80))
+    fig = px.bar(
+        stack, x="Số meeting", y="sale", color="Trạng thái", orientation="h",
+        color_discrete_map=STATUS_COLORS, category_orders={"Trạng thái": present},
+        labels={"sale": "", "Số meeting": "Số lượng", "Trạng thái": ""}
+    )
+    fig.update_traces(marker=dict(line=dict(width=0)), hovertemplate="<b>%{y}</b><br>%{fullData.name}: <b>%{x}</b> meeting<extra></extra>")
+    fig.update_layout(
+        height=chart_height, margin=dict(l=10, r=20, t=20, b=10),
+        barmode="stack", bargap=0.4, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None, font=dict(size=12)),
+        xaxis=dict(showgrid=True, gridcolor="rgba(200, 200, 200, 0.2)", zeroline=False),
+        yaxis=dict(showgrid=False, categoryorder="total ascending")
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    st.markdown("**📋 Chi tiết từng meeting**")
+    ALL = "Tất cả"
+    pick = st.pills("Lọc trạng thái", [ALL] + order, selection_mode="multi", default=[ST_MISS, ST_DONE],
+                    label_visibility="collapsed", key="mt_status_pills")
+    pick = order if (not pick or ALL in pick) else pick
+    detail = mm[mm["status"].isin(pick)].sort_values("ts", ascending=False)
+    st.caption(f"{len(detail)} meeting")
+    st.dataframe(
+        pd.DataFrame({
+            "Thời gian": detail["ts"].dt.tz_localize(None), 
+            "Sale": detail["sale"], 
+            "Meeting": detail["title"],
+            "Khách": detail["guests"], 
+            "Trạng thái recap": detail["status"],
+            "Email recap": detail.get("recap_subject", pd.Series("", index=detail.index)).fillna(""),
+            "Thời gian gửi recap sau meeting": detail.get("recap_delay_str", pd.Series("—", index=detail.index)),
+            "Est Doanh thu (₫)": detail.get("est_amount", pd.Series(0, index=detail.index)),
+            "Khớp theo": detail.get("recap_by", pd.Series("", index=detail.index)).fillna(""),
+        }),
+        hide_index=True, width="stretch",
+        column_config={
+            "Thời gian": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
+            "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
+        },
+    )
 
 
 def page_all_recap_emails():
