@@ -1761,6 +1761,7 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1776,7 +1777,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2256,7 +2257,6 @@ def page_meetings():
             "Thời gian": detail["ts"].dt.tz_localize(None), 
             "Sale": detail["sale"], 
             "Meeting": detail["title"],
-            "Khách": detail["guests"], 
             "Trạng thái recap": detail["status"],
             "Email recap": detail.get("recap_subject", pd.Series("", index=detail.index)).fillna(""),
             "Thời gian gửi recap sau meeting": detail.get("recap_delay_str", pd.Series("—", index=detail.index)),
@@ -2267,6 +2267,8 @@ def page_meetings():
         column_config={
             "Thời gian": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
             "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
+            "Meeting": st.column_config.TextColumn(width=260),
+            "Email recap": st.column_config.TextColumn(width=220, help="Kéo mép cột hoặc rê chuột để xem tiêu đề đầy đủ"),
         },
     )
 
@@ -2298,8 +2300,7 @@ def page_all_recap_emails():
             "Sale": sale_name,
             "Tiêu đề mail recap": em.subject,
             "Estimate doanh thu": em.est_amount,
-            "Leader mở": f"https://mail.google.com/mail/u/0/#all/{mid}" if mid else "",
-            "Sale mở": gmail_link(getattr(em, "rfc_id", ""), mid),
+            "Mở recap": gmail_link(getattr(em, "rfc_id", ""), mid),
         })
         
     df_display = pd.DataFrame(rows).sort_values("Ngày gửi recap", ascending=False)
@@ -2317,12 +2318,11 @@ def page_all_recap_emails():
     st.dataframe(filtered_df, hide_index=True, width="stretch", column_config={
         "Ngày gửi recap": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
         "Estimate doanh thu": st.column_config.NumberColumn(format="localized"),
-        "Leader mở": st.column_config.LinkColumn(
-            "Mở mail (leader)", display_text="📨 Mở thẳng",
-            help="Mở thẳng email trong hộp thư leader (dashboard đọc mail từ hộp thư này)."),
-        "Sale mở": st.column_config.LinkColumn(
-            "Mở mail (sale / người nhận)", display_text="🔎 Tìm trong hộp thư",
-            help="Tìm đúng email này trong hộp thư của người bấm (mục Đã gửi của sale) — bấm vào kết quả để mở."),
+        "Tiêu đề mail recap": st.column_config.TextColumn(width=420),
+        "Mở recap": st.column_config.LinkColumn(
+            "Mở recap", display_text="🔎 Mở trong hộp thư",
+            help="Tìm đúng email này trong hộp thư Gmail của người bấm (sale: mục Đã gửi; leader: mail được CC) "
+                 "— bấm vào kết quả để mở."),
     })
 
 
