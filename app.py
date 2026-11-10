@@ -2364,15 +2364,30 @@ def page_trends():
                                                                        help=f"Số cuộc gọi ÷ {n_days} ngày trong kỳ"),
                      "TB meeting/tuần": st.column_config.NumberColumn(format="%.1f", help="Số meeting ÷ số ngày × 7"),
                  })
-    with st.expander("📅 Số liệu theo từng ngày"):
-        tc, tm = trend(calls_), trend(mts_)
-        daily = pd.DataFrame({"Ngày": tc["ts"].dt.tz_localize(None), "Cuộc gọi": tc["n"].values})
-        daily = daily.merge(pd.DataFrame({"Ngày": tm["ts"].dt.tz_localize(None), "Meeting": tm["n"].values}),
-                            on="Ngày", how="outer").fillna(0)
-        daily[["Cuộc gọi", "Meeting"]] = daily[["Cuộc gọi", "Meeting"]].astype(int)
+    with st.expander("📅 Số liệu theo từng ngày, từng Sale", expanded=True):
         fmt_ = "DD/MM HH:mm" if d_start == d_end else "DD/MM/YYYY"
-        st.dataframe(daily.sort_values("Ngày", ascending=False), hide_index=True, width="stretch",
-                     column_config={"Ngày": st.column_config.DatetimeColumn(format=fmt_)})
+        sales_ = list(lb["sale"])
+
+        def by_day(df_):
+            base = trend(df_)
+            out = pd.DataFrame({"Ngày": base["ts"].dt.tz_localize(None)})
+            for s_ in sales_:
+                out[s_] = trend(df_[df_["sale"] == s_])["n"].values if len(df_) else 0
+            out["Tổng"] = base["n"].values
+            return out.sort_values("Ngày", ascending=False)
+
+        def show(tbl):
+            st.dataframe(tbl.style.set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)",
+                                                                       "font-weight": "bold"})
+                         .map(lambda v: "color: rgba(128, 128, 128, 0.5);" if v == 0 else "", subset=sales_),
+                         hide_index=True, width="stretch",
+                         column_config={"Ngày": st.column_config.DatetimeColumn(format=fmt_, pinned=True)})
+
+        t1, t2 = st.tabs(["📞 Cuộc gọi", "📅 Meeting"])
+        with t1:
+            show(by_day(calls_))
+        with t2:
+            show(by_day(mts_))
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**📞 Số cuộc gọi**")
