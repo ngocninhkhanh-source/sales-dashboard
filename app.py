@@ -1589,7 +1589,13 @@ def _render_hara():
     at_ = datetime.fromtimestamp(h.get("at", 0) / 1000, TZ)
     st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ theo bộ lọc HaraCRM: **{h.get('filter') or 'không rõ'}** "
                f"(không theo bộ lọc bên trái) · cập nhật {at_:%H:%M %d/%m}.")
-    for t in h.get("tables", []):
+    want = [_plain(x) for x in secret("haracrm", "tables", ["Xếp hạng funnel", "NV trong phạm vi lọc"])]
+    shown = [t for t in h.get("tables", []) if not want or any(w in _plain(t.get("title", "")) for w in want)]
+    shown.sort(key=lambda t: next((i for i, w in enumerate(want) if w in _plain(t.get("title", ""))), 99))
+    if not shown:
+        st.warning("Dữ liệu HaraCRM không có bảng nào đúng tên cần lấy "
+                   f"({', '.join(secret('haracrm', 'tables', ['Xếp hạng funnel', 'NV trong phạm vi lọc']))}).")
+    for t in shown:
         headers = list(t.get("headers") or [])
         rows = [list(r) for r in t.get("rows") or []]
         width = max([len(headers)] + [len(r) for r in rows])
@@ -1603,8 +1609,14 @@ def _render_hara():
         st.markdown(f"**{t.get('title') or 'Bảng'}** · _{t.get('tab', '')}_")
         if t.get("sub"):
             st.caption(t["sub"])
-        st.table(df.style.hide(axis="index").set_table_styles(
-            [{"selector": "th", "props": [("white-space", "normal")]}]))
+        hl = [c for c in df.columns if _plain(c).replace(" ", "") in ("lead→win", "lead->win")]
+        sty = (df.style.hide(axis="index")
+               .set_table_styles([{"selector": "th", "props": [("white-space", "normal"), ("font-weight", "700"),
+                                                                ("background-color", "rgba(62, 180, 137, 0.18)")]}])
+               .map_index(lambda _: "font-weight: 700; background-color: rgba(62, 180, 137, 0.18);", axis="columns"))
+        if hl:
+            sty = sty.set_properties(subset=hl, **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
+        st.table(sty)
 
 
 def page_leads():
