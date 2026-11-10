@@ -375,12 +375,12 @@ def _bitrix_batch(cmds: dict[str, str]) -> dict[str, int]:
     return out
 
 
-LEAD_STAGES_DEFAULT = ["New", "Call 1", "Call 2", "Call 3", "Qualify", "UnQLF"]
+LEAD_STAGES_DEFAULT = ["New", "Call 1", "Call 2", "Call 3", "Qualified", "Unqualified"]
 
 
 def lead_stage_config() -> tuple[list[str], list[str]]:
     stages = list(secret("bitrix24", "lead_stages", LEAD_STAGES_DEFAULT))
-    closed = list(secret("bitrix24", "lead_closed_stages", ["UnQLF"]))
+    closed = list(secret("bitrix24", "lead_closed_stages", ["Unqualified"]))
     return stages, closed
 
 
@@ -572,7 +572,8 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             leads += [{"ts": ts, "sale": sale}] * int(nl)
             deals += [{"ts": ts, "sale": sale}] * int(nd)
             won += [{"ts": ts, "sale": sale, "amount": float(rev) if i == 0 else 0.0} for i in range(int(nw))]
-    stages = [{"sale": id2sale[clean_id(u)], "stage": k, "n": int(n)}
+    cfg = {x.strip().lower(): x for x in lead_stage_config()[0]}  # khớp tên stage không phân biệt hoa thường
+    stages = [{"sale": id2sale[clean_id(u)], "stage": cfg.get(str(k).strip().lower(), k), "n": int(n)}
               for u, m in snap.get("stages", {}).items() if clean_id(u) in id2sale for k, n in m.items()]
     return {"leads_new": pd.DataFrame(leads, columns=["ts", "sale"]),
             "deals_new": pd.DataFrame(deals, columns=["ts", "sale"]),
@@ -1477,8 +1478,10 @@ def page_bitrix_update():
             st.warning("Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm tới khi app khởi động lại. "
                        f"Chi tiết: `{err}`. Cách sửa: bật **Google Drive API** trong Google Cloud và vào "
                        "**🔑 Kết nối Google** đăng nhập lại (tick đủ 3 quyền).")
-        if snap.get("missing"):
-            st.warning(f"Không thấy stage {snap['missing']} trên Bitrix24. Stage hiện có: {snap.get('allStages')}. "
+        have = [str(x).strip().lower() for x in snap.get("allStages", [])]
+        missing = [x for x in lead_stage_config()[0] if have and x.strip().lower() not in have]
+        if missing:
+            st.warning(f"Không thấy stage {missing} trên Bitrix24. Stage hiện có: {snap.get('allStages')}. "
                        "Sửa dòng `lead_stages` trong Secrets cho đúng tên.")
         id2 = dict(zip(roster["bitrix_id"], roster["sale"]))
         rows = []
