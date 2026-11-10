@@ -2,7 +2,7 @@
 Dashboard Hiệu suất Sale
 ========================
 Nguồn dữ liệu:
-  • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, Deal thắng, Doanh thu (tổng giá trị deal thắng)
+  • Bitrix24        : Lead mới, Lead tồn theo stage, Deal mới, deal won, Doanh thu (tổng giá trị deal won)
   • VoiceCloud      : số cuộc gọi & thời lượng gọi
   • Google Calendar : số Meeting với khách
   • Gmail           : kiểm tra email recap + Estimate doanh thu từ báo giá
@@ -538,6 +538,29 @@ say('Đang đọc danh sách nguồn lead…');
 const srcs=(await call('crm.status.list',{filter:{ENTITY_ID:'SOURCE'}}).catch(()=>({}))).result||[];
 const excl=[],missingSrc=[];
 for(const n of (C.excl||[])){const s=srcs.find(x=>norm(x.NAME)===norm(n)||String(x.STATUS_ID).toLowerCase()===String(n).toLowerCase());if(s){excl.push(s.STATUS_ID);}else{missingSrc.push(n);}}
+say('Đang tìm trường lý do Unqualified…');
+const lf=(await call('crm.lead.fields',{}).catch(()=>({}))).result||{};
+const lab=k=>{const q=lf[k]||{};return String(q.listLabel||q.formLabel||q.title||k);};
+const cands=Object.keys(lf).filter(k=>k.indexOf('UF_CRM')===0&&['enumeration','string','crm_status','list'].includes(lf[k].type));
+const score=k=>{const t=new Set(norm(lab(k)).split(' '));return (t.has('ly')&&t.has('do')?2:0)+(['unqualified','unqualify','unqual','unqlf','unq','junk','reason'].some(w=>t.has(w))?2:0)+(t.has('khong')&&t.has('dat')?1:0);};
+let rf='';
+if(C.reason){rf=Object.keys(lf).find(k=>k.toLowerCase()===String(C.reason).toLowerCase()||norm(lab(k))===norm(C.reason))||'';}
+else{let best=0;for(const k of cands){const sc=score(k);if(sc>best){best=sc;rf=k;}}if(best<2)rf='';}
+const rmap={};
+if(rf){const q=lf[rf];for(const it of (q.items||[])){rmap[String(it.ID)]=String(it.VALUE).trim();}
+if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){rmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
+const df_=(await call('crm.deal.fields',{}).catch(()=>({}))).result||{};
+const dlab=k=>{const q=df_[k]||{};return String(q.listLabel||q.formLabel||q.title||k);};
+const dcands=Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0&&['enumeration','string','crm_status','list'].includes(df_[k].type));
+const dscore=k=>{const t=new Set(norm(dlab(k)).split(' '));return (t.has('ly')&&t.has('do')?2:0)+(['lost','fail','failed','thua','huy'].some(w=>t.has(w))||(t.has('that')&&t.has('bai'))?2:0);};
+let lrf='';
+if(C.lostReason){lrf=Object.keys(df_).find(k=>k.toLowerCase()===String(C.lostReason).toLowerCase()||norm(dlab(k))===norm(C.lostReason))||'';}
+else{let best=0;for(const k of dcands){const sc=dscore(k);if(sc>best){best=sc;lrf=k;}}if(best<2)lrf='';}
+const lmap={};
+if(lrf){const q=df_[lrf];for(const it of (q.items||[])){lmap[String(it.ID)]=String(it.VALUE).trim();}
+if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){lmap[String(it.STATUS_ID)]=String(it.NAME).trim();}}}
+const dlost={};
+const closedIds=sts.filter(x=>(C.closed||[]).some(n=>String(x.NAME).trim().toLowerCase()===n.toLowerCase()||String(x.STATUS_ID).toLowerCase()===n.toLowerCase())).map(x=>x.STATUS_ID);
 const srcName={},stName={},want=[],ldet={};
 for(const x of srcs){srcName[x.STATUS_ID]=String(x.NAME).trim();}
 for(const x of sts){stName[x.STATUS_ID]=String(x.NAME).trim();}
@@ -547,14 +570,17 @@ const L=await all('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso}
 L.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),0,1));
 const D=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,'>=DATE_CREATE':iso},select:['ID','DATE_CREATE'],order:{ID:'ASC'}},'deal mới của '+name);
 D.forEach(x=>add(name,String(x.DATE_CREATE).slice(0,10),1,1));
-const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal thắng của '+name);
+const W=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S','>=CLOSEDATE':iso},select:['ID','CLOSEDATE','OPPORTUNITY'],order:{ID:'ASC'}},'deal won của '+name);
 W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);});
 stages[name]={};const m={};
-if(want.length){const LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);
-for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10)]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
+if(want.length){const LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rf?[rf]:[])},'lead theo stage của '+name);
+for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rf&&closedIds.includes(x.STATUS_ID)){const v=x[rf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>rmap[String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
 ldet[name]=Object.entries(m).map(([k,v])=>JSON.parse(k).concat([v]));
+const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'F','>=CLOSEDATE':mFrom+'T00:00:00+07:00'},select:['ID','SOURCE_ID','CLOSEDATE'].concat(lrf?[lrf]:[])},'deal Lost của '+name);
+const lm={};for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
+dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));
 }
-const data={v:3,ldet:ldet,ldetFrom:mFrom,users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:4,ldet:ldet,ldetFrom:mFrom,reasonField:rf?[rf,lab(rf)]:null,reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -654,9 +680,14 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             won += [{"ts": ts, "sale": sale, "amount": float(rev) if i == 0 else 0.0} for i in range(int(nw))]
     cfg = {x.strip().lower(): x for x in lead_stage_config()[0]}  # khớp tên stage không phân biệt hoa thường
     detail = pd.DataFrame(
-        [{"sale": key2sale(u), "stage": cfg.get(str(st_).strip().lower(), st_), "source": src, "created": day, "n": int(n)}
-         for u, rows in (snap.get("ldet") or {}).items() if key2sale(u) for st_, src, day, n in rows],
+        [{"sale": key2sale(u), "stage": cfg.get(str(r[0]).strip().lower(), r[0]), "source": r[1], "created": r[2],
+          "reason": r[3] if len(r) >= 5 else "", "n": int(r[-1])}
+         for u, rows in (snap.get("ldet") or {}).items() if key2sale(u) for r in rows],
         columns=LEAD_DETAIL_COLS)
+    deal_lost = pd.DataFrame(
+        [{"sale": key2sale(u), "source": r[0], "closed": r[1], "reason": r[2], "n": int(r[3])}
+         for u, rows in (snap.get("dlost") or {}).items() if key2sale(u) for r in rows], columns=DEAL_LOST_COLS)
+    deal_lost["closed"] = pd.to_datetime(deal_lost["closed"], errors="coerce").dt.date
     if "ldet" in snap:
         detail["created"] = pd.to_datetime(detail["created"], errors="coerce").dt.date
         stages = lead_stage_summary(detail)
@@ -668,10 +699,12 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             "deals_new": pd.DataFrame(deals, columns=["ts", "sale"]),
             "deals_won": pd.DataFrame(won, columns=["ts", "sale", "amount"]),
             "lead_stages": stages,
-            "lead_detail": detail}
+            "lead_detail": detail,
+            "deal_lost": deal_lost}
 
 
-LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "n"]
+LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
+DEAL_LOST_COLS = ["sale", "source", "closed", "reason", "n"]
 
 
 def _norm_txt(t) -> str:
@@ -695,7 +728,9 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
     stages, _ = lead_stage_config()
     cfg = {"url": target_url, "months": int(secret("bitrix24", "months", 3)), "stages": stages,
            "users": [[r.bitrix_id, r.sale, r.email] for r in roster.itertuples()],
-           "excl": lead_exclude_sources()}
+           "excl": lead_exclude_sources(), "closed": lead_stage_config()[1],
+           "reason": str(secret("bitrix24", "unqual_reason_field", "") or ""),
+           "lostReason": str(secret("bitrix24", "lost_reason_field", "") or "")}
     js = "".join(BOOKMARKLET_SRC.splitlines())
     js = js.replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
@@ -1009,10 +1044,27 @@ def _demo_lead_detail(today: date) -> pd.DataFrame:
         for st_, n_ in zip(LEAD_STAGES_DEFAULT, r.poisson([12, 9, 7, 4, 5, 16])):
             for _ in range(int(n_)):
                 rows.append({"sale": s_, "stage": st_, "source": srcs[int(r.choice(6, p=[.3, .25, .15, .12, .1, .08]))],
-                             "created": today - timedelta(days=int(r.integers(0, 120))), "n": 1})
+                             "created": today - timedelta(days=int(r.integers(0, 120))),
+                             "reason": (["A5. Invalid Phone", "A6. Không đăng ký", "A2. Sinh viên Test",
+                                         "F4. Khách trả lời không có nhu cầu", "B8.2. Không nghe máy"][int(r.integers(0, 5))]
+                                        if st_ == "Unqualified" else ""), "n": 1})
     df = pd.DataFrame(rows, columns=LEAD_DETAIL_COLS)
     df = df[df["created"] >= today.replace(day=1)]
-    return df.groupby(["sale", "stage", "source", "created"], as_index=False)["n"].sum()
+    return df.groupby(["sale", "stage", "source", "created", "reason"], as_index=False)["n"].sum()
+
+
+def _demo_deal_lost(today: date) -> pd.DataFrame:
+    rows = []
+    srcs = ["Website", "Facebook Ads", "Hotline", "Sale tự tìm", "Partner giới thiệu", "Sự kiện"]
+    reasons = ["L1. Giá cao", "L2. Chọn đối thủ", "L3. Chưa có nhu cầu", "L4. Không liên lạc được"]
+    for s_ in DEMO_SALES:
+        r = np.random.default_rng(sum(map(ord, s_)) + 7)
+        for _ in range(int(r.poisson(5))):
+            rows.append({"sale": s_, "source": srcs[int(r.integers(0, 6))],
+                         "closed": today.replace(day=1) + timedelta(days=int(r.integers(0, today.day))),
+                         "reason": reasons[int(r.integers(0, 4))], "n": 1})
+    df = pd.DataFrame(rows, columns=DEAL_LOST_COLS)
+    return df.groupby(["sale", "source", "closed", "reason"], as_index=False)["n"].sum()
 
 
 def demo_data(d_start: date, d_end: date) -> dict:
@@ -1045,6 +1097,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
         "leads_new": _demo_events(rng, w, days, 2.2),
         "lead_stages": lead_stage_summary(ld := _demo_lead_detail(today)),
         "lead_detail": ld,
+        "deal_lost": _demo_deal_lost(today),
         "deals_new": _demo_events(rng, w, days, 0.9),
         "deals_won": (dw := _demo_events(rng, w, days, 0.3)).assign(amount=rng.lognormal(17.6, 0.6, len(dw)).round(-5)),
         "meetings": meetings,
@@ -1105,6 +1158,7 @@ data = {
     "leads_new": pd.DataFrame(columns=["ts", "sale"]),
     "lead_stages": pd.DataFrame(columns=["sale", "stage", "n"]),
     "lead_detail": pd.DataFrame(columns=LEAD_DETAIL_COLS),
+    "deal_lost": pd.DataFrame(columns=DEAL_LOST_COLS),
     "deals_new": pd.DataFrame(columns=["ts", "sale"]),
     "deals_won": pd.DataFrame(columns=["ts", "sale", "amount"]),
     "meetings": pd.DataFrame(columns=["event_id", "sale", "email", "ts", "end", "title", "guests", "recap",
@@ -1336,7 +1390,7 @@ def page_overview():
     row1, row2 = st.columns(4), st.columns(4)
     row1[0].metric("💰 Doanh thu", fmt_vnd(lb["revenue"].sum()),
                    help=f"Tổng giá trị deal Won có ngày đóng trong kỳ: {lb['revenue'].sum():,.0f} ₫".replace(",", "."))
-    row1[1].metric("🏆 Deal thắng", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ")
+    row1[1].metric("🏆 deal won", fmt_int(lb["deals_won"].sum()), help="Deal chuyển sang trạng thái thắng trong kỳ")
     row1[2].metric("🤝 Deal mới", fmt_int(lb["deals_new"].sum()), help="Deal tạo mới trong kỳ")
     row1[3].metric("📥 Lead mới", fmt_int(lb["leads_new"].sum()), help="Lead tạo mới trong kỳ")
     row2[0].metric("📊 Doanh thu Est (Meeting)", fmt_vnd(lb["est_revenue"].sum()),
@@ -1353,7 +1407,7 @@ def page_overview():
         "Doanh thu (₫)": lb["revenue"],
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
-        "Deal mới": lb["deals_new"], "Deal thắng": lb["deals_won"],
+        "Deal mới": lb["deals_new"], "deal won": lb["deals_won"],
         "Cuộc gọi": lb["calls"], "Thời lượng gọi": lb["talk"].map(fmt_duration),
         "Meeting": lb["meetings"], "Đã recap": lb["recap_done"], "Thiếu recap": lb["recap_miss"],
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
@@ -1396,6 +1450,7 @@ def page_leads():
         f = detail
         if picked_src:
             f = f[f["source"].astype(str).isin(picked_src)]
+        t0_, t1_ = l_from, now.date()
         if t_mode == "Cả tháng này":
             col_f3.caption(f"Lead tạo từ {l_from:%d/%m/%Y} đến nay")
         else:
@@ -1414,6 +1469,12 @@ def page_leads():
         stage_view_full["Tổng"] = tbl[stages].sum(axis=1)
         stage_view_full = stage_view_full.reset_index().rename(columns={"sale": "Sale", "index": "Sale"})
         _render_lead_table(stage_view_full, selected_sale_lead)
+        _render_unqual_reasons(f, selected_sale_lead, _snap)
+        lost = data.get("deal_lost", pd.DataFrame(columns=DEAL_LOST_COLS))
+        if picked_src:
+            lost = lost[lost["source"].astype(str).isin(picked_src)]
+        lost = lost[lost["closed"].map(lambda d: isinstance(d, date) and t0_ <= d <= t1_)]
+        _render_lost_reasons(lost, selected_sale_lead, _snap)
         return
 
     if _snap is not None and "ldet" not in _snap:
@@ -1441,6 +1502,82 @@ def page_leads():
     _render_lead_table(stage_view_full, selected_sale_lead)
 
 
+def _reason_table(u: pd.DataFrame, total_col: str) -> pd.DataFrame:
+    u = u.copy()
+    u["reason"] = u["reason"].replace("", "(Chưa ghi lý do)").fillna("(Chưa ghi lý do)")
+    pv = u.pivot_table(index="sale", columns="reason", values="n", aggfunc="sum", fill_value=0)
+    order_ = [c for c in pv.sum().sort_values(ascending=False).index if c != "(Chưa ghi lý do)"]
+    pv = pv[order_ + [c for c in pv.columns if c == "(Chưa ghi lý do)"]]
+    pv.insert(0, total_col, pv.sum(axis=1))
+    pv = pv.sort_values(total_col, ascending=False).reset_index().rename(columns={"sale": "Sale"})
+    pv.columns.name = None
+    if len(pv) > 1:
+        tot = pv.drop(columns="Sale").sum().to_frame().T
+        tot.insert(0, "Sale", "TỔNG")
+        pv = pd.concat([pv, tot], ignore_index=True)
+    num = [c for c in pv.columns if c != "Sale"]
+    pv[num] = pv[num].astype(int)
+    return pv
+
+
+def _show_reason_table(pv: pd.DataFrame, total_col: str, help_: str, fname: str, label: str):
+    num = [c for c in pv.columns if c != "Sale"]
+    styled = (pv.style
+              .set_properties(subset=[total_col], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
+              .format(lambda v: f"{v:,}" if v else "", subset=num))
+    st.dataframe(styled, hide_index=True, width="stretch",
+                 column_config={"Sale": st.column_config.TextColumn("Sale", pinned=True),
+                                total_col: st.column_config.NumberColumn(help=help_)})
+    st.download_button(label, pv.to_csv(index=False).encode("utf-8-sig"), file_name=fname, mime="text/csv")
+
+
+def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | None):
+    st.subheader("💔 Lý do Lost theo Sale")
+    if snap_ is not None and "dlost" not in snap_:
+        st.info("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm nút trên Bitrix24.")
+        return
+    if snap_ is not None and not snap_.get("lostField"):
+        cands = snap_.get("lostCands") or []
+        st.warning("Chưa tìm thấy trường **lý do Lost** của deal trên Bitrix24 (bảng dưới chỉ có số deal Lost). "
+                   'Điền vào Secrets, mục `[bitrix24]`: `lost_reason_field = "Tên trường"`, rồi cài lại nút Cập nhật Bitrix.'
+                   + (f" Các trường tự tạo của deal: {', '.join(cands)}." if cands else ""))
+    elif snap_:
+        st.caption(f"Deal thất bại (Lost) **đóng trong tháng này**, lấy lý do từ trường **{snap_['lostField'][1]}**. "
+                   "Áp dụng bộ lọc Sale / Source; bộ lọc thời gian tính theo ngày đóng deal.")
+    if selected_sale != "Tất cả":
+        lost = lost[lost["sale"] == selected_sale]
+    if lost.empty:
+        st.caption("Không có deal Lost nào với bộ lọc hiện tại.")
+        return
+    _show_reason_table(_reason_table(lost, "Lost"), "Lost", "Tổng deal Lost",
+                       f"ly_do_lost_{now:%Y%m%d}.csv", "⬇️ Tải bảng lý do Lost (CSV)")
+
+
+def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | None):
+    st.subheader("🚫 Lý do Unqualified theo Sale")
+    if snap_ is not None and "reasonField" not in snap_:
+        st.info("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** rồi bấm nút trên Bitrix24.")
+        return
+    if snap_ is not None and not snap_.get("reasonField"):
+        cands = snap_.get("reasonCands") or []
+        st.warning("Chưa tìm thấy trường **lý do Unqualified** trên Bitrix24. Điền tên trường vào Secrets, mục `[bitrix24]`: "
+                   '`unqual_reason_field = "Tên trường"`, rồi cài lại nút Cập nhật Bitrix.'
+                   + (f" Các trường tự tạo hiện có: {', '.join(cands)}." if cands else ""))
+        return
+    if snap_:
+        st.caption(f"Lấy từ trường **{snap_['reasonField'][1]}** của lead đang ở stage "
+                   f"{', '.join(closed_stages)}. Áp dụng cùng bộ lọc Sale / Source / Ngày tạo ở trên.")
+    closed_l_ = [c.lower() for c in closed_stages]
+    u = f[f["stage"].astype(str).str.lower().isin(closed_l_)].copy()
+    if selected_sale != "Tất cả":
+        u = u[u["sale"] == selected_sale]
+    if u.empty:
+        st.caption("Không có lead Unqualified nào với bộ lọc hiện tại.")
+        return
+    _show_reason_table(_reason_table(u, "Unqual"), "Unqual", "Tổng lead Unqualified",
+                       f"ly_do_unqualified_{now:%Y%m%d}.csv", "⬇️ Tải bảng lý do Unqualified (CSV)")
+
+
 def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
     filtered_stage_df = stage_view_full.copy()
     if selected_sale_lead != "Tất cả":
@@ -1456,8 +1593,14 @@ def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
         
     st.markdown(f"Hiển thị **{len(filtered_stage_df[filtered_stage_df['Sale'] != 'TỔNG'])}** nhân sự")
     
+    num_cols_ = [c for c in filtered_stage_df.columns if c != "Sale"]
+    filtered_stage_df[num_cols_] = filtered_stage_df[num_cols_].fillna(0).astype(int)
+    styled = (filtered_stage_df.style
+              .set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)",
+                                                  "font-weight": "bold"})
+              .format("{:,.0f}", subset=num_cols_))
     st.dataframe(
-        filtered_stage_df, 
+        styled, 
         hide_index=True, 
         width="stretch", 
         column_config={
@@ -1675,7 +1818,7 @@ def page_bitrix_update():
             v = np.array(list(days.values()) or [[0, 0, 0, 0]], dtype=float).sum(axis=0)
             rows.append({"Sale": r.sale,
                          "Tài khoản Bitrix": f"ID {uid} (tìm theo {how})" if uid else "❌ Không tìm thấy",
-                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "Deal thắng": int(v[2]), "Doanh thu (₫)": v[3],
+                         "Lead mới": int(v[0]), "Deal mới": int(v[1]), "deal won": int(v[2]), "Doanh thu (₫)": v[3],
                          "Lead theo stage": sum(snap["stages"].get(key, {}).values()) if key else 0})
         summary = pd.DataFrame(rows)
         st.dataframe(summary, hide_index=True, width="stretch",
@@ -1684,13 +1827,27 @@ def page_bitrix_update():
             st.warning(f"Không thấy nguồn lead {snap['missingSources']} trên Bitrix24 nên chưa loại được khỏi Lead tồn. "
                        f"Nguồn hiện có: {snap.get('allSources')}. Sửa dòng `lead_exclude_sources` trong Secrets "
                        "cho đúng tên, rồi cài lại nút.")
+        if snap.get("v", 0) >= 4:
+            if snap.get("reasonField"):
+                st.caption(f"Lý do Unqualified lấy từ trường: **{snap['reasonField'][1]}** (`{snap['reasonField'][0]}`).")
+            else:
+                st.warning("Không tìm thấy trường lý do Unqualified. Điền `unqual_reason_field = \"Tên trường\"` vào mục "
+                           f"`[bitrix24]` trong Secrets rồi cài lại nút. Trường tự tạo hiện có: {snap.get('reasonCands')}")
+        if snap.get("v", 0) >= 4 and "dlost" in snap:
+            if snap.get("lostField"):
+                st.caption(f"Lý do Lost lấy từ trường: **{snap['lostField'][1]}** (`{snap['lostField'][0]}`).")
+            else:
+                st.warning("Không tìm thấy trường lý do Lost của deal. Điền `lost_reason_field = \"Tên trường\"` vào mục "
+                           f"`[bitrix24]` trong Secrets rồi cài lại nút. Trường tự tạo của deal: {snap.get('lostCands')}")
+        if snap.get("missingSources"):
+            pass
         elif snap.get("exclSources"):
             st.caption(f"Lead tồn theo stage không tính lead có nguồn: {', '.join(snap['exclSources'])}.")
         if snap.get("unresolved"):
             st.error(f"Không tìm thấy tài khoản Bitrix24 của: **{', '.join(snap['unresolved'])}**. Kiểm tra `email` "
                      "trong Secrets có đúng email đăng nhập Bitrix24 không, hoặc `name` có đúng họ tên trên Bitrix24 không.")
         empty = summary[(summary["Tài khoản Bitrix"] != "❌ Không tìm thấy") &
-                        (summary[["Lead mới", "Deal mới", "Deal thắng", "Lead theo stage"]].sum(axis=1) == 0)]
+                        (summary[["Lead mới", "Deal mới", "deal won", "Lead theo stage"]].sum(axis=1) == 0)]
         if len(empty):
             st.warning(f"Đã tìm thấy tài khoản nhưng không có lead/deal nào (từ {snap['from']}) của: "
                        f"**{', '.join(empty['Sale'])}**. Nếu không đúng thực tế, báo lại để kiểm tra.")
