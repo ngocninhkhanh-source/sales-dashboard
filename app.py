@@ -1823,9 +1823,9 @@ def page_meetings():
 
     st.markdown("**📋 Chi tiết từng meeting**")
     ALL = "Tất cả"
-    pick = st.pills("Lọc trạng thái", [ALL] + order, selection_mode="multi", default=[ST_MISS, ST_DONE],
-                    label_visibility="collapsed", key="mt_status_pills")
-    pick = order if (not pick or ALL in pick) else pick
+    one = st.pills("Lọc trạng thái", [ALL] + order, selection_mode="single", default=ALL,
+                   label_visibility="collapsed", key="mt_status_pill")
+    pick = order if (not one or one == ALL) else [one]
     detail = mm[mm["status"].isin(pick)].sort_values("ts", ascending=False)
     st.caption(f"{len(detail)} meeting")
     st.dataframe(
