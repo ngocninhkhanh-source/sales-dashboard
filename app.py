@@ -1610,7 +1610,7 @@ def _old_button_msg(snap_: dict):
 
 
 def _render_lost_reasons(lost: pd.DataFrame, selected_sale: str, snap_: dict | None):
-    st.subheader("💔 Lý do Lost theo Sale")
+    st.subheader("💔 Lý do Lost Deal theo Sale")
     if snap_ is not None and "dlost" not in snap_:
         _old_button_msg(snap_)
         return
@@ -1651,7 +1651,8 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
     u0 = f[f["stage"].astype(str).str.lower().isin(closed_l_)]
     if selected_sale != "Tất cả":
         u0 = u0[u0["sale"] == selected_sale]
-    for idx, (code, label) in enumerate(fields):
+    order = sorted(enumerate(fields), key=lambda t: (0 if "reason" in _plain(t[1][1]) else 1, t[0]))  # "Unqualified reason" lên trước
+    for idx, (code, label) in order:
         st.subheader(f"🚫 {label} theo Sale")
         st.caption(f"Lead đang ở stage {', '.join(closed_stages)}, lấy từ trường **{label}**"
                    f"{f' (`{code}`)' if code else ''}. Áp dụng cùng bộ lọc Sale / Source / Ngày tạo ở trên.")
