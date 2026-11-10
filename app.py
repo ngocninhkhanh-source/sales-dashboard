@@ -535,10 +535,14 @@ stages[name]={};
 for(const n in code){say('Đang đếm lead theo stage của '+name+': '+n);const d=await call('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:code[n]},select:['ID'],start:0});stages[name][n]=d.total||0;await sleep(250);}
 }
 const data={v:2,users:found,unresolved:unresolved,at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
-const b64=btoa(unescape(encodeURIComponent(JSON.stringify(data)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-say('✅ Đã đọc xong dữ liệu Bitrix24 từ '+from.split('-').reverse().join('/')+'.\nBấm nút dưới để gửi sang dashboard.');
+const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
+const raw=new TextEncoder().encode(JSON.stringify(data));
+let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
+const viaUrl=(C.url+'?bx='+b64).length<6000;
+say('✅ Đã đọc xong dữ liệu Bitrix24 từ '+from.split('-').reverse().join('/')+'.\n'+(viaUrl?'Bấm nút dưới để gửi sang dashboard.':'Dữ liệu lớn: bấm nút dưới — dữ liệu được copy sẵn, trang dashboard mở ra thì bấm vào ô dán (Cmd/Ctrl + V) rồi bấm Lưu.'));
 const btn=document.createElement('button');btn.innerText='📤 Gửi sang dashboard';btn.style.cssText='margin-top:10px;padding:8px 14px;background:rgb(42,120,214);color:white;border:0;border-radius:6px;font-weight:600;cursor:pointer';
-btn.onclick=()=>{try{navigator.clipboard.writeText(b64);}catch(e){}window.open(C.url+'?bx='+b64,'_blank');box.remove();};
+const ta=document.createElement('textarea');ta.value=b64;ta.readOnly=true;ta.style.cssText='display:block;width:340px;height:60px;margin-top:8px;font:11px monospace';
+btn.onclick=async()=>{let ok=false;try{await navigator.clipboard.writeText(b64);ok=true;}catch(e){try{box.appendChild(ta);ta.select();ok=document.execCommand('copy');}catch(e2){}}window.open(viaUrl?C.url+'?bx='+b64:C.url+'?paste=1','_blank');if(viaUrl||ok){box.remove();}else{say('Không tự copy được. Hãy chọn hết nội dung ô dưới (Cmd/Ctrl + A), copy (Cmd/Ctrl + C) rồi dán vào trang dashboard.');box.appendChild(ta);}};
 const x=document.createElement('button');x.innerText='Đóng';x.style.cssText='margin:10px 0 0 10px;padding:8px 14px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';x.onclick=()=>box.remove();
 box.appendChild(btn);box.appendChild(x);
 }catch(e){say('❌ Lỗi: '+e.message);const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);}
@@ -599,8 +603,14 @@ def decode_snapshot(raw: str) -> dict:
     raw = raw.strip()
     if "bx=" in raw:
         raw = raw.split("bx=", 1)[1].split("&", 1)[0]
-    raw += "=" * (-len(raw) % 4)
-    snap = json.loads(base64.urlsafe_b64decode(raw.encode()).decode("utf-8"))
+    raw = "".join(raw.split())
+    if raw.startswith("z"):  # dữ liệu đã nén (deflate) bởi nút Cập nhật Bitrix
+        import zlib
+        body = raw[1:] + "=" * (-len(raw[1:]) % 4)
+        snap = json.loads(zlib.decompress(base64.urlsafe_b64decode(body.encode()), -15).decode("utf-8"))
+    else:
+        raw += "=" * (-len(raw) % 4)
+        snap = json.loads(base64.urlsafe_b64decode(raw.encode()).decode("utf-8"))
     if not isinstance(snap, dict) or "agg" not in snap or "stages" not in snap:
         raise ValueError("Dữ liệu không đúng định dạng của nút Cập nhật Bitrix.")
     return snap
@@ -1506,8 +1516,15 @@ def page_bitrix_update():
                 "lưu vào Google Drive của leader để cả team cùng xem.")
     # 1) Nhận dữ liệu gửi sang (qua ?bx=... hoặc dán tay)
     incoming = st.query_params.get("bx", "")
-    with st.expander("Không tự chuyển sang được? Dán dữ liệu thủ công"):
-        pasted = st.text_area("Dữ liệu (nút đã tự copy sẵn — chỉ cần dán)", height=80, key="bx_paste")
+    paste_mode = st.query_params.get("paste", "") == "1"
+    if paste_mode:
+        st.info("📋 Dữ liệu Bitrix24 đã được **copy sẵn**. Bấm vào ô dưới, nhấn **Cmd/Ctrl + V** rồi bấm **💾 Lưu dữ liệu**.")
+    pasted = ""
+    with st.expander("📋 Dán dữ liệu từ nút Cập nhật Bitrix", expanded=paste_mode):
+        with st.form("bx_paste_form", clear_on_submit=True, border=False):
+            txt = st.text_area("Dữ liệu (nút đã tự copy sẵn — chỉ cần dán)", height=90)
+            if st.form_submit_button("💾 Lưu dữ liệu", type="primary"):
+                pasted = txt
     raw = incoming or pasted
     if raw:
         try:
@@ -1517,7 +1534,7 @@ def page_bitrix_update():
             st.cache_data.clear()
         except Exception as e:
             st.error(f"Không đọc được dữ liệu: {e}")
-        if incoming:
+        if incoming or paste_mode:
             st.query_params.clear()
             st.rerun()
     if "bx_last" in st.session_state:
