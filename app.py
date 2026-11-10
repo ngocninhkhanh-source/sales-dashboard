@@ -202,6 +202,29 @@ def check_password() -> bool:
     return False
 
 
+def owner_mode() -> tuple[bool, bool]:
+    """(là chủ dashboard?, đã cấu hình phân quyền?). Chủ = email trong [app].owner_emails (app riêng tư trên
+    Streamlit Cloud) hoặc mở link có ?admin=<admin_key> / nhập admin_key ở thanh bên."""
+    key = str(secret("app", "admin_key", "") or "")
+    owners = [str(e).strip().lower() for e in (secret("app", "owner_emails", []) or []) if str(e).strip()]
+    if not key and not owners:
+        return True, False
+    if st.session_state.get("is_owner"):
+        return True, True
+    try:
+        em = str(getattr(st.user, "email", "") or "").lower()
+    except Exception:
+        em = ""
+    if em and em in owners:
+        st.session_state["is_owner"] = True
+        return True, True
+    q = st.query_params.get("admin", "")
+    if key and q and hmac.compare_digest(str(q).encode(), key.encode()):
+        st.session_state["is_owner"] = True
+        return True, True
+    return False, True
+
+
 if not check_password():
     st.stop()
 
@@ -1439,13 +1462,28 @@ else:
 with sale_slot:
     picked = st.multiselect("👤 Lọc theo Sale", roster["sale"].tolist(), placeholder="Tất cả Sale",
                             help="Chọn một hoặc vài Sale. Để trống = cả team.")
+OWNER, OWNER_CFG = owner_mode()
 with st.sidebar:
     st.divider()
-    st.subheader("Trạng thái kết nối")
-    for k in SOURCES:
-        st.markdown(f"{status[k]} &nbsp; {k}")
-    
-    st.caption(f"Dữ liệu cache {CACHE_TTL // 60} phút · Cập nhật: {now:%H:%M %d/%m}")
+    if OWNER:
+        st.subheader("Trạng thái kết nối")
+        for k in SOURCES:
+            st.markdown(f"{status[k]} &nbsp; {k}")
+        st.caption(f"Dữ liệu cache {CACHE_TTL // 60} phút · Cập nhật: {now:%H:%M %d/%m}")
+        if not OWNER_CFG and not DEMO:
+            st.caption("🔓 Ai mở dashboard cũng thấy mục Cài đặt. Thêm `admin_key` vào mục `[app]` trong Secrets "
+                       "để chỉ chủ dashboard thấy.")
+    else:
+        st.caption(f"Cập nhật: {now:%H:%M %d/%m}")
+        if secret("app", "admin_key", ""):
+            with st.expander("🔒 Quản trị"):
+                with st.form("owner_login", border=False):
+                    k_ = st.text_input("Mã quản trị", type="password")
+                    if st.form_submit_button("Mở"):
+                        if hmac.compare_digest(k_.encode(), str(secret("app", "admin_key", "")).encode()):
+                            st.session_state["is_owner"] = True
+                            st.rerun()
+                        st.error("Sai mã.")
 
 if roster.empty:
     st.title("📊 Dashboard Hiệu suất Sale")
@@ -1665,6 +1703,7 @@ def page_hara():
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
         return
     team = secret("haracrm", "team", "S2.4")
+    st.caption(f"Team **{team}** · số đã tính sẵn trên HaraCRM (salemaxcr.haracrm.com).")
     h, where, err = get_snapshot(HARA_SNAP)
     if not h:
         st.info("Chưa có dữ liệu HaraCRM. Leader vào **⚙️ Cài đặt → 📈 Cập nhật HaraCRM** để cài nút, rồi bấm nút "
@@ -1680,7 +1719,7 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    st.caption(f"Số đã tính sẵn trên HaraCRM · kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2508,11 +2547,18 @@ pages = {"Tổng quan": [
     st.Page(page_won_deals, title="Danh sách deal won", icon="💰", url_path="deal-won"),
 ]}
 settings = []
-if configured("google_oauth"):
-    settings.append(st.Page(page_google_connect, title="Kết nối Google", icon="🔑", url_path="ket-noi-google"))
-if not DEMO and bitrix_mode() == "bookmarklet":
+if any(st.query_params.get(k_) for k_ in ("bx", "hx", "paste")):   # tab do nút bookmarklet mở để gửi dữ liệu sang
+    st.session_state["recv_page"] = ("hara" if "hx" in st.query_params
+                                     or "haracrm" in str(getattr(st.context, "url", "")) else "bitrix")
+if not OWNER and st.session_state.get("recv_page") == "hara":
+    settings.append(st.Page(page_hara_update, title="Cập nhật HaraCRM", icon="📈", url_path="cap-nhat-haracrm"))
+elif not OWNER and st.session_state.get("recv_page") == "bitrix" and not DEMO:
     settings.append(st.Page(page_bitrix_update, title="Cập nhật Bitrix", icon="📥", url_path="cap-nhat-bitrix"))
-if not DEMO:
+if OWNER and configured("google_oauth"):
+    settings.append(st.Page(page_google_connect, title="Kết nối Google", icon="🔑", url_path="ket-noi-google"))
+if OWNER and not DEMO and bitrix_mode() == "bookmarklet":
+    settings.append(st.Page(page_bitrix_update, title="Cập nhật Bitrix", icon="📥", url_path="cap-nhat-bitrix"))
+if OWNER and not DEMO:
     settings.append(st.Page(page_hara_update, title="Cập nhật HaraCRM", icon="📈", url_path="cap-nhat-haracrm"))
 if settings:
     pages["Cài đặt"] = settings
