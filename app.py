@@ -2077,15 +2077,11 @@ def page_deal_open():
         st.warning("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** (trang Cập nhật Bitrix) rồi bấm trên Bitrix24.")
         return
     st.caption("Deal **đang xử lý** (chưa Won / Lost) hiện nằm ở từng stage trên Bitrix24, tại thời điểm bấm nút cập nhật.")
-    c1, c2, c3 = st.columns([1, 1, 1])
+    c1, c2 = st.columns([1, 1])
     s_pick = c1.selectbox("🔍 Lọc theo Sale", ["Tất cả"] + list(lb["sale"]), key="do_sale")
     t_opts = ["Tất cả thời gian", "Hôm nay", "Hôm qua", "Tuần này", "Tháng này", "Tháng trước", "Quý này",
               "Tùy chọn khoảng ngày"]
     t_mode = c2.selectbox("📅 Ngày tạo deal", t_opts, key="do_time")
-    cats = list(dict.fromkeys(d["cat"])) if not d.empty else []
-    cat = c3.selectbox("🗂️ Pipeline", cats, key="do_cat") if len(cats) > 1 else (cats[0] if cats else None)
-    if cat:
-        d = d[d["cat"] == cat]
     if s_pick != "Tất cả":
         d = d[d["sale"] == s_pick]
     if t_mode != "Tất cả thời gian":
@@ -2099,7 +2095,7 @@ def page_deal_open():
     if d.empty:
         st.info("Không có deal tồn nào với bộ lọc hiện tại.")
         return
-    order = (d[["stage", "order"]].drop_duplicates("stage").sort_values("order")["stage"].tolist())
+    order = (d[["stage", "order"]].sort_values("order").drop_duplicates("stage")["stage"].tolist())  # mọi pipeline
     k = st.columns(min(len(order), 6) or 1)
     for i_, stg in enumerate(order[:6]):
         k[i_].metric(stg, fmt_int(d.loc[d["stage"] == stg, "n"].sum()))
