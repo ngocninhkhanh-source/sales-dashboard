@@ -757,8 +757,9 @@ ADJ_SOURCES = ["Sale tự tìm", "MKT", "Hotline/Chat", "Partner", "Up sell"]
 
 
 def load_adjustments() -> pd.DataFrame:
-    """Điều chỉnh doanh thu thủ công (lưu trên Google Drive của leader, file riêng)."""
+    """Deal won thêm tay (ngoài Bitrix / bù lệch) — lưu trên Google Drive của leader, file riêng."""
     snap_, _, _ = get_snapshot(ADJ_NAME)
+    st.session_state["_adj_raw"] = snap_ or {}
     df = pd.DataFrame((snap_ or {}).get("rows", []), columns=ADJ_COLS)
     df["day"] = pd.to_datetime(df["day"], errors="coerce").dt.date
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
@@ -766,6 +767,23 @@ def load_adjustments() -> pd.DataFrame:
     for c in ("sale", "source", "package", "note"):
         df[c] = df[c].fillna("").astype(str)
     return df[df["day"].notna() & (df["sale"] != "")].reset_index(drop=True)
+
+
+def load_overrides() -> dict:
+    """{deal_id: {"amount": số tiền đúng, "note": ...}} — sửa số tiền deal won đọc từ Bitrix."""
+    return {str(k): v for k, v in ((st.session_state.get("_adj_raw") or {}).get("overrides") or {}).items()
+            if isinstance(v, dict) and v.get("amount") is not None}
+
+
+def save_adjustments(rows: list | None = None, overrides: dict | None = None) -> tuple[str, str]:
+    raw = dict(st.session_state.get("_adj_raw") or {})
+    if rows is not None:
+        raw["rows"] = rows
+    if overrides is not None:
+        raw["overrides"] = overrides
+    raw["at"] = int(_time.time() * 1000)
+    st.session_state["_adj_raw"] = raw
+    return save_snapshot(raw, ADJ_NAME)
 
 
 def decode_payload(raw: str, param: str = "bx") -> dict:
@@ -1844,14 +1862,36 @@ try:
 except Exception as e:
     ADJ = pd.DataFrame(columns=ADJ_COLS)
     problems.append(f"**Điều chỉnh doanh thu** — {type(e).__name__}: {e}")
+OVR = load_overrides()
+_ovr_rows = []
+if OVR and not data["won_list"].empty:   # sửa số tiền deal won Bitrix → chênh lệch cộng vào doanh thu
+    _wl0 = data["won_list"].copy()
+    _wl0["bitrix_amount"] = _wl0["amount"]
+    for i_, r_ in _wl0.iterrows():
+        o_ = OVR.get(str(r_["id"]))
+        if o_ is None:
+            continue
+        new_ = float(o_["amount"])
+        if new_ != float(r_["amount"]):
+            _ovr_rows.append({"day": r_["day"], "sale": r_["sale"], "amount": new_ - float(r_["amount"]), "deals": 0,
+                              "source": "", "package": "", "note": f"Sửa số tiền deal {r_['id']}"})
+        _wl0.at[i_, "amount"] = new_
+        _wl0.at[i_, "fixed_note"] = str(o_.get("note") or "")
+    data["won_list"] = _wl0
+    if _ovr_rows:
+        _od = pd.DataFrame(_ovr_rows)
+        _rv0 = pd.DataFrame({"ts": (pd.to_datetime(_od["day"]).dt.tz_localize(TZ) + pd.Timedelta(hours=12)).values,
+                             "sale": _od["sale"].values, "amount": _od["amount"].values})
+        data["revenue"] = _rv0 if data["revenue"].empty else pd.concat([data["revenue"], _rv0], ignore_index=True)
 ADJ_IN = ADJ[(ADJ["day"] >= d_start) & (ADJ["day"] <= d_end)] if not ADJ.empty else ADJ
+ADJ_ALL = pd.concat([ADJ_IN, pd.DataFrame(_ovr_rows, columns=ADJ_COLS)], ignore_index=True) if _ovr_rows else ADJ_IN
 if not ADJ_IN.empty:   # cộng điều chỉnh thủ công vào doanh thu + danh sách deal won
     _ts = pd.to_datetime(ADJ_IN["day"]).dt.tz_localize(TZ) + pd.Timedelta(hours=12)
     _rv = pd.DataFrame({"ts": _ts.values, "sale": ADJ_IN["sale"].values, "amount": ADJ_IN["amount"].values})
     data["revenue"] = _rv if data["revenue"].empty else pd.concat([data["revenue"], _rv], ignore_index=True)
     _wl = pd.DataFrame({
         "sale": ADJ_IN["sale"].values, "id": "", "amount": ADJ_IN["amount"].values,
-        "title": ["✏️ Điều chỉnh thủ công" + (f" · {n}" if n else "") for n in ADJ_IN["note"]],
+        "title": ["✏️ " + (n or "Deal won thêm tay") for n in ADJ_IN["note"]],
         "source": ADJ_IN["source"].replace("", "(Điều chỉnh thủ công)").values, "day": ADJ_IN["day"].values,
         "link": "", "package": ADJ_IN["package"].replace("", "(Chưa chọn gói)").values,
         "pu": ADJ_IN["deals"].values})
@@ -1915,7 +1955,7 @@ lb = (
            left_on="sale", right_index=True, how="left")
     .fillna(0)
 )
-_adj_g = ADJ_IN.groupby("sale") if not ADJ_IN.empty else None
+_adj_g = ADJ_ALL.groupby("sale") if not ADJ_ALL.empty else None
 lb["adj_amount"] = lb["sale"].map(_adj_g["amount"].sum()).fillna(0.0) if _adj_g is not None else 0.0
 lb["deals_won"] = (lb["deals_won"] + (lb["sale"].map(_adj_g["deals"].sum()).fillna(0) if _adj_g is not None else 0)
                    ).clip(lower=0)
@@ -2040,7 +2080,7 @@ def page_overview():
         view = pd.concat([view, pd.DataFrame([tot])[view.columns]], ignore_index=True)
     view["KPI (₫)"] = kpi.map(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."))
     money = ["Doanh thu (₫)", "Est Doanh thu", "APU (₫)"]
-    if ADJ_IN.empty:
+    if ADJ_ALL.empty:
         view = view.drop(columns=["✏️ Điều chỉnh (₫)"])
     else:
         money.append("✏️ Điều chỉnh (₫)")
@@ -2068,63 +2108,115 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
-    if not ADJ_IN.empty:
-        st.caption(f"✏️ Doanh thu đã gồm **{len(ADJ_IN)} điều chỉnh thủ công** trong kỳ "
-                   f"(tổng {'+' if ADJ_IN['amount'].sum() >= 0 else ''}{fmt_vnd(ADJ_IN['amount'].sum())}"
-                   f"{', ' + format(int(ADJ_IN['deals'].sum()), '+d') + ' deal won' if ADJ_IN['deals'].sum() else ''}).")
-    if OWNER:
-        _render_adjust_editor()
+    if not ADJ_ALL.empty:
+        st.caption(f"✏️ Doanh thu đã gồm **{len(ADJ_ALL)} điều chỉnh thủ công** trong kỳ "
+                   f"(tổng {'+' if ADJ_ALL['amount'].sum() >= 0 else ''}{fmt_vnd(ADJ_ALL['amount'].sum())}"
+                   f"{', ' + format(int(ADJ_ALL['deals'].sum()), '+d') + ' deal won' if ADJ_ALL['deals'].sum() else ''}) "
+                   "— xem/sửa ở trang **💰 Danh sách deal won**.")
+    else:
+        st.caption("✏️ Sửa số tiền deal won hoặc thêm doanh thu ngoài Bitrix ở trang **💰 Danh sách deal won**.")
     _render_won_breakdown()
 
 
-def _render_adjust_editor():
-    """Chủ dashboard nhập tay doanh thu: bù lệch số Bitrix hoặc doanh thu không có trên Bitrix."""
-    with st.expander("✏️ Điều chỉnh doanh thu thủ công", expanded=False):
-        st.markdown(
-            "- **Lệch số Bitrix:** nhập **phần chênh lệch** (vd. Bitrix ghi 31.828.000 nhưng thực tế 33.000.000 → nhập "
-            "`1172000`; thừa thì nhập số âm). *Số deal won* để `0`.\n"
-            "- **Doanh thu ngoài Bitrix:** nhập số tiền, *Số deal won* = `1` (hoặc số deal tương ứng).\n"
-            "- Doanh thu được tính vào tháng của cột **Ngày**. Thêm dòng ở cuối bảng; xoá dòng: tick ô đầu dòng rồi "
-            "bấm 🗑. Xong bấm **💾 Lưu điều chỉnh**.")
-        sales_opts = list(roster["sale"])
-        cur = ADJ.sort_values("day", ascending=False).reset_index(drop=True)
-        cur["source"] = cur["source"].where(cur["source"].isin(ADJ_SOURCES), None)
-        ed = st.data_editor(
-            cur.rename(columns={"day": "Ngày", "sale": "Sale", "amount": "Số tiền (₫)", "deals": "Số deal won",
-                                "source": "Nguồn", "package": "Gói dịch vụ", "note": "Ghi chú"}),
-            num_rows="dynamic", hide_index=True, width="stretch", key="adj_editor",
-            column_config={
-                "Ngày": st.column_config.DateColumn(format="DD/MM/YYYY", default=now.date(), required=True),
-                "Sale": st.column_config.SelectboxColumn(options=sales_opts, required=True, width="medium"),
-                "Số tiền (₫)": st.column_config.NumberColumn(format="localized", step=1000, default=0,
-                                                             help="Số âm để trừ bớt"),
-                "Số deal won": st.column_config.NumberColumn(step=1, default=0, min_value=-50, max_value=50,
-                                                             help="Cộng thêm vào số deal won (0 nếu chỉ bù lệch tiền)"),
-                "Nguồn": st.column_config.SelectboxColumn(options=ADJ_SOURCES,
-                                                          help="Để chia vào bảng doanh thu theo Source"),
-                "Gói dịch vụ": st.column_config.TextColumn(),
-                "Ghi chú": st.column_config.TextColumn(width="large", help="Lý do điều chỉnh / tên khách"),
-            })
-        if st.button("💾 Lưu điều chỉnh", type="primary", key="adj_save"):
-            rows = []
-            for r in ed.itertuples(index=False):
-                day_, sale_, amt_, deals_ = r[0], r[1], r[2], r[3]
-                if pd.isna(day_) or not sale_:
-                    continue
-                amt_ = float(0 if pd.isna(amt_) else amt_)
-                deals_ = int(0 if pd.isna(deals_) else deals_)
-                if not amt_ and not deals_:
-                    continue
-                rows.append({"day": pd.Timestamp(day_).date().isoformat(), "sale": str(sale_), "amount": amt_,
-                             "deals": deals_, "source": "" if pd.isna(r[4]) or r[4] is None else str(r[4]),
-                             "package": "" if pd.isna(r[5]) or r[5] is None else str(r[5]).strip(),
-                             "note": "" if pd.isna(r[6]) or r[6] is None else str(r[6]).strip()})
-            where, err = save_snapshot({"at": int(_time.time() * 1000), "rows": rows}, ADJ_NAME)
-            if err and where != "Google Drive":
-                st.warning(f"Đã lưu tạm ({where}) — chưa lưu được lên Google Drive: {err}")
-            else:
-                st.session_state.pop("adj_editor", None)
+def _owner_unlock(key: str) -> bool:
+    """True nếu là chủ dashboard; nếu chưa thì hiện ô nhập mã quản trị để mở khoá."""
+    if OWNER:
+        return True
+    st.caption("Chỉ chủ dashboard được sửa. Nhập mã quản trị (`admin_key` trong Secrets) để mở.")
+    with st.form(f"unlock_{key}", border=False):
+        k_ = st.text_input("Mã quản trị", type="password", key=f"unlock_pw_{key}")
+        if st.form_submit_button("🔓 Mở khoá"):
+            key_ = str(secret("app", "admin_key", "") or "")
+            if key_ and hmac.compare_digest(k_.encode(), key_.encode()):
+                st.session_state["is_owner"] = True
                 st.rerun()
+            st.error("Sai mã." if key_ else "Chưa đặt `admin_key` trong mục `[app]` của Secrets.")
+    return False
+
+
+def _saved(where: str, err: str, editor_key: str):
+    if err and where != "Google Drive":
+        st.warning(f"Đã lưu tạm ({where}) — chưa lưu được lên Google Drive: {err}")
+    else:
+        st.session_state.pop(editor_key, None)
+        st.rerun()
+
+
+def _render_won_edit(w_bitrix: pd.DataFrame):
+    """Trang Danh sách deal won: sửa số tiền deal Bitrix + thêm deal won ngoài Bitrix."""
+    with st.expander("✏️ Sửa số tiền / thêm deal won ngoài Bitrix", expanded=False):
+        if not _owner_unlock("won"):
+            return
+        t1, t2 = st.tabs(["✏️ Sửa số tiền deal Bitrix", "➕ Thêm deal won ngoài Bitrix"])
+        with t1:
+            st.caption("Nhập **Số tiền đúng** cho deal bị lệch (để trống = dùng số Bitrix). Doanh thu ở bảng "
+                       "Hiệu suất theo Sale tự cộng phần chênh lệch.")
+            if w_bitrix.empty:
+                st.info("Không có deal won Bitrix nào với bộ lọc hiện tại.")
+            else:
+                ov = dict(OVR)
+                src = w_bitrix.sort_values(["day", "bitrix_amount"], ascending=[False, False])
+                tbl = pd.DataFrame({
+                    "ID": src["id"].astype(str).values, "Ngày": src["day"].values, "Sale": src["sale"].values,
+                    "Tên deal": src["title"].values, "Bitrix ghi (₫)": src["bitrix_amount"].values,
+                    "Số tiền đúng (₫)": [ov.get(str(i), {}).get("amount") for i in src["id"]],
+                    "Ghi chú": [ov.get(str(i), {}).get("note", "") for i in src["id"]],
+                })
+                tbl["Số tiền đúng (₫)"] = pd.to_numeric(tbl["Số tiền đúng (₫)"], errors="coerce")
+                ed = st.data_editor(tbl, hide_index=True, width="stretch", key="ovr_editor",
+                                    disabled=["ID", "Ngày", "Sale", "Tên deal", "Bitrix ghi (₫)"],
+                                    column_config={
+                                        "ID": st.column_config.TextColumn(width="small"),
+                                        "Ngày": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                                        "Tên deal": st.column_config.TextColumn(width="large"),
+                                        "Bitrix ghi (₫)": st.column_config.NumberColumn(format="localized"),
+                                        "Số tiền đúng (₫)": st.column_config.NumberColumn(format="localized", step=1000,
+                                                                                         min_value=0),
+                                        "Ghi chú": st.column_config.TextColumn(width="medium"),
+                                    })
+                if st.button("💾 Lưu số tiền", type="primary", key="ovr_save"):
+                    for r in ed.itertuples(index=False):
+                        did, amt_, note_ = str(r[0]), r[5], r[6]
+                        if amt_ is None or pd.isna(amt_):
+                            ov.pop(did, None)
+                        else:
+                            ov[did] = {"amount": float(amt_), "note": "" if note_ is None or pd.isna(note_) else str(note_)}
+                    _saved(*save_adjustments(overrides=ov), "ovr_editor")
+        with t2:
+            st.caption("Doanh thu không có trên Bitrix (hoặc bù lệch chung). Tính vào tháng của cột **Ngày**. "
+                       "Thêm dòng ở cuối bảng; xoá dòng: tick ô đầu dòng rồi bấm 🗑.")
+            cur = ADJ.sort_values("day", ascending=False).reset_index(drop=True)
+            cur["source"] = cur["source"].where(cur["source"].isin(ADJ_SOURCES), None)
+            ed2 = st.data_editor(
+                cur.rename(columns={"day": "Ngày", "sale": "Sale", "amount": "Số tiền (₫)", "deals": "Số deal won",
+                                    "source": "Nguồn", "package": "Gói dịch vụ", "note": "Tên deal / ghi chú"}),
+                num_rows="dynamic", hide_index=True, width="stretch", key="adj_editor",
+                column_config={
+                    "Ngày": st.column_config.DateColumn(format="DD/MM/YYYY", default=now.date(), required=True),
+                    "Sale": st.column_config.SelectboxColumn(options=list(roster["sale"]), required=True, width="medium"),
+                    "Số tiền (₫)": st.column_config.NumberColumn(format="localized", step=1000, default=0,
+                                                                 help="Số âm để trừ bớt"),
+                    "Số deal won": st.column_config.NumberColumn(step=1, default=1, min_value=-50, max_value=50,
+                                                                 help="Cộng vào số deal won (0 nếu chỉ bù tiền)"),
+                    "Nguồn": st.column_config.SelectboxColumn(options=ADJ_SOURCES,
+                                                              help="Để chia vào bảng doanh thu theo Source"),
+                    "Gói dịch vụ": st.column_config.TextColumn(),
+                    "Tên deal / ghi chú": st.column_config.TextColumn(width="large"),
+                })
+            if st.button("💾 Lưu deal thêm tay", type="primary", key="adj_save"):
+                rows = []
+                for r in ed2.itertuples(index=False):
+                    day_, sale_, amt_, deals_ = r[0], r[1], r[2], r[3]
+                    if day_ is None or pd.isna(day_) or not sale_:
+                        continue
+                    amt_ = float(0 if amt_ is None or pd.isna(amt_) else amt_)
+                    deals_ = int(0 if deals_ is None or pd.isna(deals_) else deals_)
+                    if not amt_ and not deals_:
+                        continue
+                    txt = lambda v: "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip()
+                    rows.append({"day": pd.Timestamp(day_).date().isoformat(), "sale": str(sale_), "amount": amt_,
+                                 "deals": deals_, "source": txt(r[4]), "package": txt(r[5]), "note": txt(r[6])})
+                _saved(*save_adjustments(rows=rows), "adj_editor")
 
 
 def page_hara():
@@ -3011,6 +3103,10 @@ def page_won_deals():
         w = w[w["sale"] == s_pick]
     if src_pick:
         w = w[w["source"].astype(str).isin(src_pick)]
+    _won_bitrix = w[w["id"].astype(str) != ""].copy()
+    if "bitrix_amount" not in _won_bitrix:
+        _won_bitrix["bitrix_amount"] = _won_bitrix["amount"]
+    _won_bitrix["bitrix_amount"] = _won_bitrix["bitrix_amount"].fillna(_won_bitrix["amount"])
     k = st.columns(3)
     n_won = int(w["pu"].fillna(1).sum()) if "pu" in w else len(w)
     k[0].metric("🏆 Số deal won", fmt_int(n_won))
@@ -3020,11 +3116,21 @@ def page_won_deals():
                "Bấm **Mở deal ↗** để xem deal trên Bitrix24.")
     if w.empty:
         st.info("Không có deal won nào với bộ lọc hiện tại.")
+        _render_won_edit(_won_bitrix)
         return
+    w = w.copy()
+    if "bitrix_amount" in w:
+        edited_ = w["bitrix_amount"].notna() & (w["bitrix_amount"] != w["amount"])
+        w.loc[edited_, "title"] = "✏️ " + w.loc[edited_, "title"].astype(str)
+        w["Ghi chú"] = [(f"Bitrix ghi {b_:,.0f}".replace(",", ".") + (f" · {n_}" if isinstance(n_, str) and n_ else ""))
+                        if e_ else "" for b_, n_, e_ in zip(w["bitrix_amount"], w["fixed_note"] if "fixed_note" in w else [""] * len(w), edited_)]
+    else:
+        w["Ghi chú"] = ""
+    w.loc[w["id"].astype(str) == "", "Ghi chú"] = "Thêm tay (ngoài Bitrix)"
     view = (w.sort_values(["day", "amount"], ascending=[False, False])
             .rename(columns={"day": "Ngày ghi nhận", "sale": "Sale", "title": "Tên deal", "amount": "Số tiền (₫)",
                              "source": "Source", "link": "Link deal"})
-            [["Ngày ghi nhận", "Sale", "Tên deal", "Số tiền (₫)", "Source", "Link deal"]])
+            [["Ngày ghi nhận", "Sale", "Tên deal", "Số tiền (₫)", "Source", "Ghi chú", "Link deal"]])
     st.dataframe(view, hide_index=True, width="stretch", column_config={
         "Ngày ghi nhận": st.column_config.DateColumn(format="DD/MM/YYYY"),
         "Tên deal": st.column_config.TextColumn(width="large"),
@@ -3033,6 +3139,7 @@ def page_won_deals():
     })
     st.download_button("⬇️ Tải danh sách deal won (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"deal_won_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
+    _render_won_edit(_won_bitrix)
 
 
 def page_google_connect():
