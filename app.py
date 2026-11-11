@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+from html import escape
 import re
 import time as _time
 from urllib.parse import urlencode
@@ -658,7 +659,31 @@ try{const LD=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC
 const lm={};dlostList[name]=[];for(const x of LD){const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(lrf){const v=x[lrf];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);rs=arr.map(z=>lmap[String(z)]||String(z)).join(', ');}dlostList[name].push([String(x.ID),String(x.TITLE||'').slice(0,100),String(x.CLOSEDATE||'').slice(0,10),rs,parseFloat(x.OPPORTUNITY)||0]);const k=JSON.stringify([so,String(x.CLOSEDATE).slice(0,10),rs||'(Chưa ghi lý do)']);lm[k]=(lm[k]||0)+1;}
 dlost[name]=Object.entries(lm).map(([k,v])=>JSON.parse(k).concat([v]));}catch(e){dlost[name]=[];warn.push('Deal Lost của '+name+': '+e.message);}
 }
-const data={v:14,dlostList:dlostList,dnew:dnew,dopen:dopen,dstages:dstages,dcats:dcats,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const dcm={};
+if(C.comments!==false){try{
+const uname={};for(const [uu,nn] of resolved)uname[uu]=nn;
+const clean=t=>String(t||'').replace(/<br\s*\/?>/gi,'\n').replace(/\[\/?[A-Za-z*]+[^\]]*\]/g,'').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/[ \t]+/g,' ').replace(/ ?\n[\s]*/g,'\n').trim();
+const ids=[];const seen={};const push=i=>{i=String(i);if(i&&!seen[i]){seen[i]=1;ids.push(i);}};
+for(const n in dopen)dopen[n].slice().sort((a,b)=>String(b[7]).localeCompare(String(a[7]))).forEach(x=>push(x[0]));
+for(const n in dwon)dwon[n].forEach(x=>push(x[0]));for(const n in dlostList)dlostList[n].forEach(x=>push(x[0]));
+const lim=ids.slice(0,C.commentMax||1500);const qs=p=>{const q=new URLSearchParams();for(const k in p)enc(q,k,p[k]);return q.toString();};
+const sel=['ID','CREATED','AUTHOR_ID','COMMENT'];
+for(let i=0;i<lim.length;i+=50){const part=lim.slice(i,i+50);const cmd={};
+for(const id of part)cmd['c'+id]='crm.timeline.comment.list?'+qs({filter:{ENTITY_ID:id,ENTITY_TYPE:'deal'},select:sel,order:{ID:'DESC'}});
+say('Đang đọc comment trên deal: '+Math.min(i+50,lim.length)+' / '+lim.length);
+const d=await call('batch',{halt:0,cmd:cmd});const R=(d.result||{}).result||{},T=(d.result||{}).result_total||{};
+for(const id of part){let a=R['c'+id]||[];const tot=+T['c'+id]||a.length;
+if(tot>50&&a.length>1&&+a[0].ID<+a[a.length-1].ID){const r=await call('crm.timeline.comment.list',{filter:{ENTITY_ID:id,ENTITY_TYPE:'deal'},select:sel,start:Math.floor((tot-1)/50)*50}).catch(()=>({}));a=a.concat(r.result||[]);}
+a.sort((x,y)=>+y.ID-+x.ID);const top=a.map(x=>[String(x.CREATED||''),String(x.AUTHOR_ID||''),clean(x.COMMENT).slice(0,C.commentLen||600)]).filter(x=>x[2]).slice(0,C.commentN||5);
+if(top.length)dcm[id]=top;}
+await sleep(400);}
+const unk=[...new Set(Object.values(dcm).flat().map(x=>x[1]).filter(x=>x&&!uname[x]))];
+for(let i=0;i<unk.length;i+=50){const cmd={};for(const id of unk.slice(i,i+50))cmd['u'+id]='user.get?'+qs({ID:id});
+try{const d=await call('batch',{halt:0,cmd:cmd});const R=(d.result||{}).result||{};for(const k in R){const u=(R[k]||[])[0];if(u)uname[String(u.ID)]=[u.LAST_NAME,u.SECOND_NAME,u.NAME].filter(Boolean).join(' ').trim();}}catch(e){}}
+for(const id in dcm)dcm[id]=dcm[id].map(x=>[x[0],uname[x[1]]||(x[1]?'User '+x[1]:''),x[2]]);
+if(ids.length>lim.length)warn.push('Chỉ đọc comment của '+lim.length+'/'+ids.length+' deal (deal cập nhật gần nhất trước).');
+}catch(e){warn.push('Không đọc được comment trên deal: '+e.message);}}
+const data={v:15,dcm:dcm,dlostList:dlostList,dnew:dnew,dopen:dopen,dstages:dstages,dcats:dcats,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -830,11 +855,74 @@ LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
 DEAL_LOST_COLS = ["sale", "source", "closed", "reason", "n"]
 WON_LIST_COLS = ["sale", "id", "title", "amount", "source", "day", "link", "package"]
 DEAL_OPEN_COLS = ["sale", "stage_id", "stage", "cat", "order", "created", "n", "amount", "id", "title", "created_ts", "link",
-                  "package", "modified_ts"]
+                  "package", "modified_ts", "comments"]
 
 
 NEW_DEAL_COLS = ["sale", "ts", "title", "link"]
-DEAL_ALL_COLS = ["id", "sale", "title", "status", "stage", "amount", "modified_ts", "closed", "lost_reason", "link"]
+DEAL_ALL_COLS = ["id", "sale", "title", "status", "stage", "amount", "modified_ts", "closed", "lost_reason", "link",
+                 "comments"]
+
+
+def _cm_rows(items) -> list[tuple[str, str, str]]:
+    """[(thời gian 'dd/mm/yyyy HH:MM', người viết, nội dung)] — mới nhất trước."""
+    out = []
+    for it in items if isinstance(items, (list, tuple)) else []:
+        created, author, text = (list(it) + ["", "", ""])[:3]
+        ts = pd.to_datetime(created, errors="coerce", utc=True)
+        out.append((ts.tz_convert(TZ).strftime("%d/%m/%Y %H:%M") if not pd.isna(ts) else "", str(author or ""),
+                    str(text or "")))
+    return out
+
+
+def fmt_comments(items) -> str:
+    """Bản chữ (cho file CSV): '09/11/2026 15:05 · Nhi: nội dung ⏐ …'."""
+    return "  ⏐  ".join((" · ".join(x for x in (w, a) if x) + ": " if (w or a) else "") + t.replace("\n", " / ")
+                        for w, a, t in _cm_rows(items))
+
+
+def comment_cell(items, short: int = 48) -> str:
+    """Ô HTML: comment mới nhất (rút gọn); rê chuột hiện popup toàn bộ lịch sử comment."""
+    rows = _cm_rows(items)
+    if not rows:
+        return '<span class="cm0">—</span>'
+    first = rows[0][2].replace("\n", " ")
+    lab = escape(first[:short] + ("…" if len(first) > short else ""))
+    lis = "".join(f'<div class="ci"><div class="ch">{escape(" · ".join(x for x in (a, w) if x))}</div>'
+                  f'<div class="ct">{escape(t)}</div></div>' for w, a, t in rows)
+    return (f'<span class="cm">{lab}</span><div class="cpop"><div class="cph">Lịch sử comment Sales · '
+            f'{len(rows)} comment (mới nhất trên cùng)</div>{lis}</div>')
+
+
+POP_TABLE_CSS = """<style>
+.pt{border-collapse:collapse;width:100%;font-size:13.5px;font-family:inherit}
+.pt th,.pt td{border-bottom:1px solid rgba(128,128,128,.22);padding:7px 9px;text-align:left;vertical-align:top}
+.pt th{background:rgba(62,180,137,.16);font-weight:700;position:sticky;top:0;z-index:2}
+.pt td.n{text-align:right;white-space:nowrap} .pt td.nw{white-space:nowrap}
+.pt td.w5{min-width:90px} .pt td.w1{min-width:140px} .pt td.w2{min-width:105px} .pt td.w3{min-width:140px} .pt td.w4{min-width:85px}
+.pt tr:hover td{background:rgba(62,180,137,.06)}
+.pt a{color:rgb(28,131,225);text-decoration:none} .pt a:hover{text-decoration:underline}
+.pt .mut{color:rgba(128,128,128,.85);font-size:12px}
+.pt td.c{position:relative;min-width:150px;max-width:230px;cursor:help}
+.pt .cm{border-bottom:1px dotted currentColor} .pt .cm0{color:rgba(128,128,128,.6)}
+.pt .cpop{display:none;position:absolute;z-index:1000;right:0;top:100%;width:520px;max-height:380px;overflow-y:auto;
+  background:#111827;color:#f3f4f6;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:12px 16px;
+  text-align:left;font-weight:400;cursor:auto}
+.pt tr.up td.c .cpop{top:auto;bottom:100%}
+.pt td.c:hover .cpop{display:block}
+.pt .cph{color:#fcd34d;font-weight:700;padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,.18)}
+.pt .ci{padding:7px 0;border-bottom:1px solid rgba(255,255,255,.12)} .pt .ci:last-child{border-bottom:0}
+.pt .ch{color:#fbbf24;font-weight:700;margin-bottom:2px} .pt .ct{white-space:pre-line;line-height:1.45}
+</style>"""
+
+
+def pop_table(header: list[str], rows: list[list[str]], classes: list[str]) -> str:
+    """Bảng HTML có ô comment rê chuột hiện popup. rows: các ô đã escape; classes: lớp CSS từng cột."""
+    head = "".join(f"<th>{escape(h)}</th>" for h in header)
+    body = []
+    for i, r in enumerate(rows):
+        up = ' class="up"' if len(rows) > 6 and i >= len(rows) - 4 else ""
+        body.append(f"<tr{up}>" + "".join(f'<td class="{c}">{v}</td>' for c, v in zip(classes, r)) + "</tr>")
+    return f'{POP_TABLE_CSS}<table class="pt"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table>'
 
 
 def deal_all_frame(snap: dict, key2sale) -> pd.DataFrame:
@@ -860,6 +948,8 @@ def deal_all_frame(snap: dict, key2sale) -> pd.DataFrame:
                              "amount": float(amt), "modified_ts": pd.NaT, "closed": closed,
                              "lost_reason": reason or "(Chưa ghi lý do)", "link": link(did)})
     df = pd.DataFrame(rows, columns=DEAL_ALL_COLS)
+    cm = snap.get("dcm") or {}
+    df["comments"] = df["id"].map(lambda i: cm.get(str(i)) or [])
     return df.drop_duplicates("id", keep="first")
 
 
@@ -910,6 +1000,8 @@ def deal_open_frame(snap: dict, key2sale) -> pd.DataFrame:
     df["created_ts"] = ts.dt.tz_convert(TZ) if len(df) else ts
     mt_ = pd.to_datetime(df["modified_ts"], errors="coerce", utc=True)
     df["modified_ts"] = mt_.dt.tz_convert(TZ) if len(df) else mt_
+    cm = snap.get("dcm") or {}
+    df["comments"] = df["id"].map(lambda i: (cm.get(str(i)) or []) if i else [])
     return df
 SOURCE_GROUPS_DEFAULT = {"STT": ["sale tự tìm"], "HOTLINE/CHAT": ["chat", "phone", "hotline", "điện thoại", "cuộc gọi", "call"],
                          "PARTNER": ["partner"], "UP SELL": ["up sell", "upsell"]}
@@ -1000,7 +1092,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 19  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 20  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1013,6 +1105,7 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "reason": _cfg_list(secret("bitrix24", "unqual_reason_field", "")),
            "revDate": str(secret("bitrix24", "revenue_date_field", "Ngày ghi nhận doanh số") or "Ngày ghi nhận doanh số"),
            "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION,
+           "comments": bool(secret("bitrix24", "read_comments", True)),
            "pkg": str(secret("bitrix24", "package_field", "") or ""),
            "calls": bool(secret("bitrix24", "read_calls", True)),
            "callTypes": [int(x) for x in secret("bitrix24", "call_types", [])]}
@@ -1212,7 +1305,7 @@ def match_meeting_deals(meetings: pd.DataFrame, deals: pd.DataFrame) -> pd.DataF
     """Nối meeting ↔ deal Bitrix: (1) link deal sale dán trong mô tả lịch; (2) tự khớp tên trong tiêu đề meeting
     với tên deal của cùng Sale. Trả về cột kết quả cho từng meeting."""
     cols = ["event_id", "deal_id", "deal_title", "deal_stage", "deal_amount", "deal_link", "deal_untouched",
-            "outcome", "deal_by"]
+            "outcome", "deal_by", "deal_comments"]
     if meetings.empty:
         return pd.DataFrame(columns=cols)
     ign = set(NAME_IGNORE_DEFAULT) | set(DEAL_TITLE_IGNORE)
@@ -1243,7 +1336,8 @@ def match_meeting_deals(meetings: pd.DataFrame, deals: pd.DataFrame) -> pd.DataF
         if d is None:
             out.append({"event_id": m.event_id, "deal_id": ref, "deal_title": "", "deal_stage": "", "deal_amount": None,
                         "deal_link": "", "deal_untouched": None,
-                        "outcome": "⚪ Chưa có trong dữ liệu" if ref else "⚪ Chưa nối deal", "deal_by": ""})
+                        "outcome": "⚪ Chưa có trong dữ liệu" if ref else "⚪ Chưa nối deal", "deal_by": "",
+                        "deal_comments": []})
             continue
         unt = None
         if d.status == "open" and not pd.isna(d.modified_ts):
@@ -1260,7 +1354,8 @@ def match_meeting_deals(meetings: pd.DataFrame, deals: pd.DataFrame) -> pd.DataF
             oc = "🟡 Đang theo"
         out.append({"event_id": m.event_id, "deal_id": str(d.id), "deal_title": d.title,
                     "deal_stage": d.stage + (f" · {d.lost_reason}" if d.status == "lost" and d.lost_reason else ""),
-                    "deal_amount": d.amount, "deal_link": d.link, "deal_untouched": unt, "outcome": oc, "deal_by": how})
+                    "deal_amount": d.amount, "deal_link": d.link, "deal_untouched": unt, "outcome": oc, "deal_by": how,
+                    "deal_comments": getattr(d, "comments", None) or []})
     return pd.DataFrame(out, columns=cols)
 
 
@@ -1436,6 +1531,13 @@ def _demo_deal_lost(today: date) -> pd.DataFrame:
     return df.groupby(["sale", "source", "closed", "reason"], as_index=False)["n"].sum()
 
 
+DEMO_COMMENTS = ["Đang liên hệ với khách\nKhách đang so sánh thêm phương án khác, chưa chọn bên nào",
+                 "Khách đã gửi báo giá về công ty mẹ và đang đợi trình duyệt",
+                 "Đã meeting\nKhách thấy báo giá hơi cao => đề xuất khách trao đổi nội bộ về ngân sách",
+                 "Khách cần làm website bán hàng\nĐơn hàng web => admin => kho (đang hỏi thêm để check API)",
+                 "Gọi lần đầu, hẹn demo tuần sau"]
+
+
 def demo_data(d_start: date, d_end: date) -> dict:
     rng = np.random.default_rng(int(d_start.strftime("%Y%m%d")) + (d_end - d_start).days)
     today = datetime.now(TZ).date()
@@ -1486,7 +1588,9 @@ def demo_data(d_start: date, d_end: date) -> dict:
           "amount": float(r_.integers(0, 30)) * 1e6, "id": str(5000 + j_), "title": f"Haravan x {r_.choice(DEMO_CLIENTS)}",
           "created_ts": pd.Timestamp(datetime.combine(cd, time(9), TZ)), "link": "",
           "package": str(r_.choice(["STANDARD", "PRO", "BUSINESS WEB", ""])),
-          "modified_ts": pd.Timestamp(datetime.combine(today - timedelta(days=int(r_.integers(0, 30))), time(15), TZ))}
+          "modified_ts": pd.Timestamp(datetime.combine(today - timedelta(days=int(r_.integers(0, 30))), time(15), TZ)),
+          "comments": [[(datetime.combine(today - timedelta(days=int(k_ * 9 + r_.integers(0, 5))), time(15, 5), TZ)).isoformat(),
+                        s_, t_] for k_, t_ in enumerate(DEMO_COMMENTS[int(r_.integers(0, 3)):])]}
          for j_, (s_, (nm, o)) in enumerate((s_, so) for s_ in DEMO_SALES for so in st_demo for _ in range(int(r_.poisson(4))))],
         columns=DEAL_OPEN_COLS)
     out["won_list"] = pd.DataFrame({"sale": dw["sale"].values, "id": [str(10000 + i) for i in range(len(dw))],
@@ -1498,7 +1602,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
                                   "package": rng.choice(["STANDARD", "PRO", "BUSINESS WEB", "OMNI ADVANCED", "GROW"], len(dw))},
                                  columns=WON_LIST_COLS)
     rows_ = [{"id": r.id, "sale": r.sale, "title": r.title, "status": "open", "stage": r.stage, "amount": r.amount,
-              "modified_ts": r.modified_ts, "closed": None, "lost_reason": "", "link": ""}
+              "modified_ts": r.modified_ts, "closed": None, "lost_reason": "", "link": "", "comments": r.comments}
              for r in out["deal_open"].itertuples()]
     rows_ += [{"id": r.id, "sale": r.sale, "title": r.title, "status": "won", "stage": "Won", "amount": r.amount,
                "modified_ts": pd.NaT, "closed": r.day, "lost_reason": "", "link": ""} for r in out["won_list"].itertuples()]
@@ -2312,24 +2416,25 @@ def page_deal_open():
         "Cập nhật lần cuối": lst["modified_ts"].dt.tz_localize(None),
         "Chưa chạm (ngày)": ((pd.Timestamp(now) - lst["modified_ts"]).dt.total_seconds() / 86400).round(1),
         "Link deal": lst["link"],
+        "_cm": lst["comments"] if "comments" in lst else [[]] * len(lst),
     }).sort_values("Ngày tạo deal")
-    if lst["stage"].nunique() <= 1:      # 1 stage → đã ghi ở tiêu đề, bỏ cột cho gọn
-        view = view.drop(columns=["Stage"])
-    if lst["sale"].nunique() <= 1:
-        view = view.drop(columns=["Sale"])
-    st.caption(f"Tổng giá trị: **{fmt_vnd(lst['amount'].sum())}**")
-    st.dataframe(view.style.format(lambda v: f"{v:,.0f}".replace(",", "."), subset=["Số tiền (₫)"]),
-                 hide_index=True, width="stretch", column_config={
-        "Ngày tạo deal": st.column_config.DatetimeColumn(format="DD/MM/YY"),
-        "Tên deal": st.column_config.TextColumn(width=230, help="Kéo mép cột để xem tên dài"),
-        "Gói dịch vụ": st.column_config.TextColumn(width=150),
-        "Tồn (ngày)": st.column_config.NumberColumn(format="%.1f ngày", help="Thời gian từ lúc tạo deal đến hiện tại"),
-        "Cập nhật lần cuối": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm",
-                                                             help="Lần cuối deal được sửa trên Bitrix24 (Modified)"),
-        "Chưa chạm (ngày)": st.column_config.NumberColumn(format="%.1f ngày",
-                                                          help="Số ngày từ lần cập nhật cuối đến hiện tại"),
-        "Link deal": st.column_config.LinkColumn(display_text="Mở deal ↗"),
-    })
+    show_stage, show_sale = lst["stage"].nunique() > 1, lst["sale"].nunique() > 1   # 1 giá trị → đã ghi ở tiêu đề
+    st.caption(f"Tổng giá trị: **{fmt_vnd(lst['amount'].sum())}** · rê chuột vào ô **Comment gần nhất** để xem "
+               "lịch sử comment trên deal")
+    num = lambda v, f="{:.1f}": "" if pd.isna(v) else f.format(v)
+    hdr = (["Ngày tạo"] + (["Sale"] if show_sale else []) + ["Tên deal"] + (["Stage"] if show_stage else [])
+           + ["Gói dịch vụ", "Số tiền (₫)", "Tồn (ngày)", "Cập nhật cuối", "Chưa chạm (ngày)", "Comment gần nhất"])
+    cls = (["nw"] + (["nw"] if show_sale else []) + ["w3"] + (["w4"] if show_stage else [])
+           + ["", "n", "n", "nw", "n", "c"])
+    rows = []
+    for r in view.itertuples(index=False):
+        name = (f'<a href="{escape(r[9])}" target="_blank">{escape(str(r[2]))} ↗</a>' if r[9] else escape(str(r[2])))
+        rows.append([f"{r[0]:%d/%m/%y}" if not pd.isna(r[0]) else ""] + ([escape(str(r[1]))] if show_sale else [])
+                    + [name] + ([escape(str(r[3]))] if show_stage else [])
+                    + [escape(str(r[4])), f"{r[5]:,.0f}".replace(",", "."), num(r[6]),
+                       f"{r[7]:%d/%m/%y %H:%M}" if not pd.isna(r[7]) else "", num(r[8]), comment_cell(r[10])])
+    st.html(pop_table(hdr, rows, cls))
+    view = view.assign(**{"Comment gần nhất": view["_cm"].map(fmt_comments)}).drop(columns=["_cm"])
     st.download_button("⬇️ Tải danh sách deal (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"deal_ton_chi_tiet_{now:%Y%m%d}.csv", mime="text/csv", key="do_list_dl")
 
@@ -2450,47 +2555,47 @@ def page_meetings():
         detail = detail[detail["outcome"] == oc]
     detail = detail.sort_values("ts", ascending=False)
     col_ = lambda c, d="": detail[c] if c in detail else pd.Series(d, index=detail.index)
-    st.caption(f"{len(detail)} meeting")
-    st.dataframe(
-        pd.DataFrame({
-            "Thời gian": detail["ts"].dt.tz_localize(None), 
-            "Sale": detail["sale"], 
-            "Meeting": detail["title"],
-            "Trạng thái recap": detail["status"],
-            "Email recap": detail.get("recap_subject", pd.Series("", index=detail.index)).fillna(""),
-            "Thời gian gửi recap sau meeting": detail.get("recap_delay_str", pd.Series("—", index=detail.index)),
-            "Est Doanh thu (₫)": detail.get("est_amount", pd.Series(0, index=detail.index)),
-            "Mở recap": detail.get("recap_link", pd.Series("", index=detail.index)).fillna(""),
-            "Kết quả": col_("outcome", "⚪ Chưa nối deal").fillna("⚪ Chưa nối deal"),
-            "Deal": col_("deal_title").fillna(""),
-            "Stage hiện tại": col_("deal_stage").fillna(""),
-            "Giá trị deal (₫)": pd.to_numeric(col_("deal_amount", None), errors="coerce"),
-            "Chưa chạm (ngày)": pd.to_numeric(col_("deal_untouched", None), errors="coerce"),
-            "Mở deal": col_("deal_link").fillna(""),
-            "Nối theo": col_("deal_by").fillna(""),
-        }),
-        hide_index=True, width="stretch",
-        column_order=["Thời gian", "Sale", "Meeting", "Trạng thái recap", "Kết quả", "Deal", "Stage hiện tại",
-                      "Chưa chạm (ngày)", "Giá trị deal (₫)", "Mở deal", "Email recap",
-                      "Thời gian gửi recap sau meeting", "Est Doanh thu (₫)", "Mở recap", "Nối theo"],
-        column_config={
-            "Thời gian": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
-            "Est Doanh thu (₫)": st.column_config.NumberColumn(format="localized"),
-            "Meeting": st.column_config.TextColumn(width=260),
-            "Email recap": st.column_config.TextColumn(width=220, help="Kéo mép cột hoặc rê chuột để xem tiêu đề đầy đủ"),
-            "Mở recap": st.column_config.LinkColumn(
-                "Mở recap", display_text="🔎 Mở trong hộp thư",
-                help="Tìm đúng email recap trong hộp thư Gmail của người bấm — bấm vào kết quả để mở."),
-            "Kết quả": st.column_config.TextColumn(width=140),
-            "Deal": st.column_config.TextColumn(width=200),
-            "Giá trị deal (₫)": st.column_config.NumberColumn(format="localized"),
-            "Chưa chạm (ngày)": st.column_config.NumberColumn(format="%.0f",
-                                                               help="Số ngày kể từ lần cập nhật cuối của deal (deal đang mở)"),
-            "Mở deal": st.column_config.LinkColumn("Mở deal", display_text="↗ Bitrix"),
-            "Nối theo": st.column_config.TextColumn(width=110,
-                                                    help="link trong lịch = sale dán link deal; tên (tự khớp) = tự đoán"),
-        },
-    )
+    st.caption(f"{len(detail)} meeting · rê chuột vào ô **Comment gần nhất** để xem lịch sử comment trên deal")
+
+    def _money(v):
+        v = pd.to_numeric(v, errors="coerce")
+        return "" if pd.isna(v) or not v else fmt_vnd(v)
+
+    rows = []
+    for r in detail.itertuples():
+        g = lambda c, d="": getattr(r, c, d) if not (isinstance(getattr(r, c, d), float) and pd.isna(getattr(r, c, d))) else d
+        rlink, subj = g("recap_link"), g("recap_subject")
+        recap = escape(str(r.status))
+        if g("recap_delay_str") not in ("", "—"):
+            recap += f'<div class="mut">sau {escape(str(g("recap_delay_str")))}</div>'
+        if rlink:
+            recap += f'<div><a href="{escape(rlink)}" target="_blank" title="{escape(str(subj))}">🔎 Mở recap</a></div>'
+        dt, dl = str(g("deal_title")), g("deal_link")
+        deal = (f'<a href="{escape(dl)}" target="_blank">{escape(dt)} ↗</a>' if dl and dt else escape(dt))
+        if g("deal_by"):
+            deal += f'<div class="mut">nối theo {escape(str(g("deal_by")))}</div>'
+        unt = pd.to_numeric(g("deal_untouched", None), errors="coerce")
+        rows.append([
+            f"{pd.Timestamp(r.ts):%d/%m %H:%M}", escape(str(r.sale)), escape(str(r.title)), recap,
+            _money(g("est_amount", 0)), escape(str(g("outcome") or "⚪ Chưa nối deal")), deal,
+            escape(str(g("deal_stage"))), "" if pd.isna(unt) else f"{unt:.0f}", _money(g("deal_amount", None)),
+            comment_cell(g("deal_comments", []), short=40),
+        ])
+    st.html(pop_table(
+        ["Thời gian", "Sale", "Meeting", "Recap", "Est", "Kết quả", "Deal", "Stage hiện tại", "Chưa chạm (ngày)",
+         "Giá trị deal", "Comment gần nhất"],
+        rows, ["nw", "", "w1", "w2", "n", "w5", "w3", "w4", "n", "n", "c"]))
+    csv = pd.DataFrame({
+        "Thời gian": detail["ts"].dt.tz_localize(None), "Sale": detail["sale"], "Meeting": detail["title"],
+        "Trạng thái recap": detail["status"],
+        "Email recap": detail["recap_subject"] if "recap_subject" in detail else "",
+        "Est Doanh thu": detail["est_amount"] if "est_amount" in detail else 0,
+        "Kết quả": col_("outcome", ""), "Deal": col_("deal_title"), "Stage": col_("deal_stage"),
+        "Giá trị deal": col_("deal_amount", None), "Chưa chạm (ngày)": col_("deal_untouched", None),
+        "Link deal": col_("deal_link"), "Comment gần nhất": col_("deal_comments", None).map(fmt_comments),
+    })
+    st.download_button("⬇️ Tải danh sách meeting (CSV)", csv.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"meeting_deal_{now:%Y%m%d}.csv", mime="text/csv", key="mt_list_dl")
 
 
 def page_all_recap_emails():
