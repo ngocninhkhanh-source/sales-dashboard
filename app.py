@@ -2356,6 +2356,14 @@ def page_all_recap_emails():
 
 from html import escape
 
+THU = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+
+
+def day_label(ts, hourly: bool = False) -> str:
+    """'T4, 11/11/2026' (hoặc 'T4, 11/11 09:00' khi xem theo giờ)."""
+    ts = pd.Timestamp(ts)
+    return f"{THU[ts.weekday()]}, " + (f"{ts:%d/%m %H:%M}" if hourly else f"{ts:%d/%m/%Y}")
+
 
 def _link_html(text: str, url: str) -> str:
     t = escape(str(text))
@@ -2399,10 +2407,12 @@ def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int
         for c in cols) + "</tr>"
     body = []
     for k in idx:
-        lab = f"{k:%d/%m %H:%M}" if hourly else f"{k:%d/%m/%Y}"
+        lab = day_label(k, hourly)
         tds = "".join(cell(groups.get((k, s_)), ci) for ci, s_ in enumerate(sales_))
         tds += cell(bykey.get(k), len(cols) - 1, with_sale=True, bold=True)
-        body.append(f"<tr><td class=d>{lab}</td>{tds}</tr>")
+        wd = pd.Timestamp(k).weekday()
+        cls = "" if hourly else (" we" if wd >= 5 else "") + (" wk" if wd == 6 else "")   # T7/CN tô nền, CN kẻ ngắt tuần
+        body.append(f'<tr class="{cls.strip()}"><td class=d>{lab}</td>{tds}</tr>')
     st.html(f"""<style>
 .ht{{border-collapse:collapse;width:100%;font-size:14px;font-family:inherit}}
 .ht th,.ht td{{border:1px solid rgba(128,128,128,.25);padding:6px 10px;text-align:right}}
@@ -2414,6 +2424,9 @@ def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int
 .ht td.h.w .n{{color:rgb(240,128,30);border-bottom-color:rgb(240,128,30)}}
 .ht td:last-child{{background:rgba(255,193,7,.22);font-weight:700}}
 .ht tr.tot td{{background:rgba(62,180,137,.18);font-weight:700}}
+.ht tr.we td{{background:rgba(128,128,128,.12)}}
+.ht tr.we td:last-child{{background:rgba(255,193,7,.30)}}
+.ht tr.wk td{{border-top:3px solid rgba(62,180,137,.75)}}
 .ht .pop{{display:none;position:absolute;z-index:999;top:100%;min-width:280px;max-width:420px;text-align:left;
   background:#fff;color:#222;border:1px solid #ccc;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.18);
   padding:8px 12px;font-weight:400;white-space:normal}}
@@ -2470,14 +2483,17 @@ def page_trends():
         def show(tbl):
             num_ = sales_ + ["Tổng"]
             tbl = tbl.copy()
-            tbl["Ngày"] = tbl["Ngày"].dt.strftime("%d/%m %H:%M" if d_start == d_end else "%d/%m/%Y")
+            tbl["Ngày"] = tbl["Ngày"].map(lambda x: day_label(x, d_start == d_end))
             tot = pd.DataFrame([{"Ngày": "TỔNG", **{c: int(tbl[c].sum()) for c in num_}}])
             tbl = pd.concat([tot, tbl], ignore_index=True)       # dòng tổng theo từng Sale ở trên cùng
             st.dataframe(tbl.style.set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)",
                                                                        "font-weight": "bold"})
                          .map(lambda v: "color: rgba(128, 128, 128, 0.5);" if v == 0 else "", subset=sales_)
                          .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
-                                if r["Ngày"] == "TỔNG" else [""] * len(r), axis=1),
+                                if r["Ngày"] == "TỔNG" else
+                                ["background-color: rgba(128, 128, 128, 0.14)"] * len(r)
+                                if str(r["Ngày"]).startswith(("T7", "CN")) and d_start != d_end else [""] * len(r),
+                                axis=1),
                          hide_index=True, width="stretch",
                          column_config={"Ngày": st.column_config.TextColumn(pinned=True)})
 
