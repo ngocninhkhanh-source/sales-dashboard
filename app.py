@@ -1090,7 +1090,7 @@ def _cfg_list(v) -> list[str]:
 
 
 HARA_SNAP = "sales-dashboard-haracrm.json"
-HARA_VERSION = 3
+HARA_VERSION = 4
 HARA_SRC = r"""(async()=>{
 const C=__CFG__;
 const box=document.createElement('div');
@@ -1100,6 +1100,9 @@ const say=t=>{box.innerText='📈 Cập nhật HaraCRM → Dashboard\n'+t;};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const T=e=>String((e&&(e.innerText||e.textContent))||'').replace(/\s+/g,' ').trim();
 const vis=e=>!!(e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length));
+const Tl=e=>String((e&&(e.innerText||e.textContent))||'').split('\n').map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean).join('\n');
+const rgb=v=>{const m=String(v||'').match(/rgba?\(([^)]+)\)/);if(!m)return null;const a=m[1].split(',').map(x=>parseFloat(x));return a.length>3&&a[3]<0.05?null:a;};
+const isRed=c=>{for(const x of [c,...c.querySelectorAll('*')].slice(0,5)){const cs=getComputedStyle(x);const b=rgb(cs.backgroundColor);if(b&&b[0]>=200&&b[0]-b[1]>=20&&b[0]-b[2]>=20)return 1;const f=rgb(cs.color);if(f&&f[0]>=150&&f[1]<100&&f[2]<100)return 1;}return 0;};
 const norm=t=>String(t||'').toLowerCase().replace(/đ/g,'d').normalize('NFD').replace(/[̀-ͯ]/g,'').split(/[^a-z0-9.]+/).filter(Boolean).join(' ');
 const names=(C.names||[]).map(norm);const team=norm(C.team);
 const roots=[];const addRoot=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*')){if(e.shadowRoot)addRoot(e.shadowRoot);if(e.tagName==='IFRAME'){try{if(e.contentDocument)addRoot(e.contentDocument);}catch(er){}}}};
@@ -1107,17 +1110,21 @@ const qa=sel=>{roots.length=0;addRoot(document);return roots.flatMap(r=>[...r.qu
 const CELL='[role=cell],[role=gridcell],[role=columnheader],[role=rowheader],td,th';
 const hit=cells=>cells.some(c=>{const n=norm(c);return n===team||n.indexOf(team+' ')===0||names.includes(n)||names.some(x=>n.endsWith(' '+x));});
 const titleOf=t=>{let e=t;for(let i=0;i<7;i++){e=e.parentElement;if(!e)break;const hs=[...e.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(h=>!t.contains(h)&&(h.compareDocumentPosition(t)&Node.DOCUMENT_POSITION_FOLLOWING));if(hs.length){const h=hs[hs.length-1];let sub='';const nx=h.nextElementSibling;if(nx&&!nx.contains(t)&&nx.tagName!=='TABLE'){sub=T(nx).slice(0,240);}return [T(h),sub];}}return ['Bảng',''];};
-const scrape=tab=>{const out=[];for(const t of qa('table,[role=table],[role=grid],[role=treegrid]')){if(!vis(t)||(t.tagName!=='TABLE'&&t.querySelector('table')))continue;const isT=t.tagName==='TABLE';const trs=isT?[...t.querySelectorAll('tr')]:[...t.querySelectorAll('[role=row]')];if(!trs.length)continue;const kids=r=>isT?[...r.children]:[...r.querySelectorAll(CELL)];const hr=(isT&&t.querySelector('thead tr'))||trs.find(r=>r.querySelector('th,[role=columnheader]'))||trs[0];const headers=kids(hr).map(T);const rows=trs.filter(r=>r!==hr&&!(r.parentElement&&r.parentElement.tagName==='THEAD')).map(r=>kids(r).map(T)).filter(c=>c.length&&hit(c));if(!rows.length)continue;const [title,sub]=titleOf(t);out.push({tab:tab,title:title,sub:sub,headers:headers,rows:rows});}return out;};
+const summ=c=>c.slice(0,2).some(x=>/^(tb|tong|trung binh)( |$)/.test(norm(x)));
+const scrape=tab=>{const out=[];for(const t of qa('table,[role=table],[role=grid],[role=treegrid]')){if(!vis(t)||(t.tagName!=='TABLE'&&t.querySelector('table')))continue;const isT=t.tagName==='TABLE';const trs=isT?[...t.querySelectorAll('tr')]:[...t.querySelectorAll('[role=row]')];if(!trs.length)continue;const kids=r=>isT?[...r.children]:[...r.querySelectorAll(CELL)];const thr=isT?[...t.querySelectorAll('thead tr')]:[];const hr=(thr.length?thr.reduce((a,b)=>kids(b).length>=kids(a).length?b:a):null)||trs.find(r=>r.querySelector('th,[role=columnheader]'))||trs[0];const headers=kids(hr).map(Tl);const body=trs.filter(r=>r!==hr&&!(r.parentElement&&r.parentElement.tagName==='THEAD')&&vis(r)).map(r=>{const k=kids(r);return {c:k.map(Tl),f:k.map(isRed)};}).filter(x=>x.c.length);const mine=body.filter(x=>hit(x.c));if(!mine.length)continue;const keep=body.filter(x=>hit(x.c)||summ(x.c));const [title,sub]=titleOf(t);out.push({tab:tab,title:title,sub:sub,headers:headers,rows:keep.map(x=>x.c),flags:keep.map(x=>x.f)});}return out;};
+const showSmall=async()=>{if(C.small===false)return false;const cb=qa('input[type=checkbox]').filter(e=>{const l=e.closest('label')||e.parentElement;return l&&vis(l)&&norm(T(l)).indexOf('mau nho')>=0;}).find(e=>!e.checked);if(!cb)return false;cb.click();await sleep(1200);return true;};
 const tabEl=name=>{const n=norm(name);return qa('button,a,[role=tab],li,span,div').filter(e=>vis(e)&&e.children.length<=2&&norm(T(e))===n).pop();};
 try{
 const getFilt=()=>{const dx=qa('span,div,p').filter(vis).map(T).filter(x=>x.length<300&&x.indexOf('Đang xem')>=0).map(x=>(x.match(/Đang xem:?\s*([0-9/]+\s*[–-]\s*[0-9/]+)/)||[])[1]).find(Boolean);return dx||qa('button,span,div,a').filter(vis).map(T).find(x=>x.length<60&&/^\d{1,2}\/\d{1,2}\s*[–-]\s*\d{1,2}\/\d{1,2}/.test(x))||'';};
-const readAll=async()=>{const tables=[];const seen=new Set();const miss=[];for(const name of (C.tabs||[])){const el=tabEl(name);if(!el){miss.push(name);continue;}say('Đang mở tab '+name+'… (chờ bảng hiện ra)');el.click();let got=[];for(let i=0;i<Math.ceil((C.wait||15000)/500);i++){await sleep(500);got=scrape(name);if(got.length){await sleep(800);got=scrape(name);break;}}for(const x of got){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}if(!tables.length){for(const x of scrape('Trang hiện tại')){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}return {tables:tables,miss:miss};};
-const curMonth=()=>{const m=(getFilt().match(/\d{1,2}\/(\d{1,2})\/\d{4}/)||[])[1];return m?+m:0;};
+const readAll=async()=>{const tables=[];const seen=new Set();const miss=[];for(const name of (C.tabs||[])){const el=tabEl(name);if(!el){miss.push(name);continue;}say('Đang mở tab '+name+'… (chờ bảng hiện ra)');el.click();let got=[];for(let i=0;i<Math.ceil((C.wait||15000)/500);i++){await sleep(500);got=scrape(name);if(got.length){await sleep(800);got=scrape(name);break;}}if(got.length&&await showSmall())got=scrape(name);for(const x of got){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}if(!tables.length){for(const x of scrape('Trang hiện tại')){const k=x.title+'|'+x.headers.join('|');if(!seen.has(k)){seen.add(k);tables.push(x);}}}return {tables:tables,miss:miss};};
+const curMonth=()=>{const f=getFilt();const m=(f.match(/\d{1,2}\/(\d{1,2})\/\d{4}/)||f.match(/^\s*\d{1,2}\/(\d{1,2})/)||[])[1];return m?+m:0;};
+const mBtn=m=>qa('button,a,span,div,li').filter(e=>vis(e)&&e.children.length<=1&&T(e)==='T'+m).pop();
+const openFilt=async()=>{const b=qa('button,a').filter(vis).find(e=>norm(T(e))==='doi bo loc');if(b){b.click();await sleep(900);}};
 const periods=[];let miss=[];const nowD=new Date();const want=[];for(let k=(C.months||2)-1;k>=0;k--){want.push(new Date(nowD.getFullYear(),nowD.getMonth()-k,1));}
-for(const d of want){const m=d.getMonth()+1;const label='Tháng '+m;const key=d.getFullYear()+'-'+String(m).padStart(2,'0');const btn=qa('button,a,span,div,li').filter(e=>vis(e)&&e.children.length<=1&&T(e)==='T'+m).pop();if(btn){say('Đang chọn '+label+' trên HaraCRM…');btn.click();let ok=false;for(let i=0;i<40;i++){await sleep(500);if(curMonth()===m){ok=true;break;}if(i===6){const ap=qa('button').filter(vis).find(e=>T(e)==='Áp dụng');if(ap)ap.click();}}if(!ok){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không chuyển được sang '+label});continue;}await sleep(1500);}else if(want.length>1&&curMonth()!==m){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không thấy nút T'+m});continue;}say('Đang đọc '+label+'…');const r=await readAll();miss=r.miss;periods.push({key:key,label:label,filter:getFilt(),tables:r.tables});}
+for(const d of want){const m=d.getMonth()+1;const label='Tháng '+m;const key=d.getFullYear()+'-'+String(m).padStart(2,'0');let btn=curMonth()===m?null:mBtn(m);if(!btn&&curMonth()!==m){await openFilt();btn=mBtn(m);}if(btn){say('Đang chọn '+label+' trên HaraCRM…');btn.click();let ok=false;for(let i=0;i<40;i++){await sleep(500);if(curMonth()===m){ok=true;break;}if(i===6){const ap=qa('button').filter(vis).find(e=>T(e)==='Áp dụng');if(ap)ap.click();}}if(!ok){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không chuyển được sang '+label});continue;}await sleep(1500);}else if(want.length>1&&curMonth()!==m){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không thấy nút T'+m});continue;}say('Đang đọc '+label+'…');const r=await readAll();miss=r.miss;periods.push({key:key,label:label,filter:getFilt(),tables:r.tables});}
 const tables=periods.flatMap(p=>p.tables);const filt=periods.length?periods[periods.length-1].filter:getFilt();
 if(!tables.length){qa('x');const nT=qa('table').length,nR=qa('[role=table],[role=grid]').length,nI=document.querySelectorAll('iframe').length,nS=roots.length-1,has=roots.some(r=>norm(T(r.body||r)).indexOf(team)>=0);say('❌ Không thấy bảng nào có dòng của '+C.team+' trên trang này.\nChẩn đoán: bảng HTML '+nT+' · role=table '+nR+' · iframe '+nI+' · vùng con '+nS+' · thấy chữ '+C.team+': '+(has?'có':'không')+'.\nChụp khung này gửi lại để chỉnh nút.');const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);return;}
-const data={v:2,kind:'hara',bv:C.bv,at:Date.now(),host:location.host,filter:filt,team:C.team,missTabs:miss,periods:periods,tables:periods.length?periods[periods.length-1].tables:[]};
+const data={v:3,kind:'hara',bv:C.bv,at:Date.now(),host:location.host,filter:filt,team:C.team,missTabs:miss,periods:periods,tables:periods.length?periods[periods.length-1].tables:[]};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -2222,6 +2229,81 @@ def _render_won_edit(w_bitrix: pd.DataFrame):
                 _saved(*save_adjustments(rows=rows), "adj_editor")
 
 
+_HARA_NUM = re.compile(r"^(-?[\d.,]+\s*%?|—|-)\s+(.+)$")
+
+
+def _hara_split(txt: str) -> tuple[str, str]:
+    """'26%\n6/23' hoặc '26% 6/23' → ('26%', '6/23'); chữ thường giữ nguyên."""
+    txt = str(txt or "").strip()
+    if "\n" in txt:
+        main, sub = txt.split("\n", 1)
+        return main.strip(), " ".join(sub.split())
+    m = _HARA_NUM.match(txt)
+    return (m.group(1), m.group(2)) if m else (txt, "")
+
+
+HARA_CSS = """<style>
+.ht{border-collapse:collapse;width:100%;font-size:13.5px;font-family:inherit}
+.ht th,.ht td{padding:6px 7px;border-bottom:1px solid rgba(128,128,128,.2);vertical-align:middle}
+.ht th{font-weight:700;text-align:right;background:rgba(128,128,128,.06);line-height:1.25;min-width:52px}
+.ht th.l,.ht td.l{text-align:left} .ht td{text-align:right;white-space:nowrap} .ht td.l{white-space:normal;min-width:100px}
+.ht th .s{display:block;font-weight:400;font-size:11.5px;color:rgba(110,110,110,.95)}
+.ht th.stg{background:rgba(59,130,246,.10)} .ht th.rt{background:rgba(250,204,21,.16)}
+.ht th.win{background:rgba(255,193,7,.30)} .ht td.win{background:rgba(255,193,7,.16);font-weight:700}
+.ht td .s{font-size:11.5px;color:rgba(120,120,120,.95);margin-left:4px}
+.ht td .lo{font-style:italic}
+.ht td.bad{background:rgba(239,68,68,.14);color:rgb(185,28,28);font-weight:700}
+.ht td.bad .s{color:rgb(185,28,28)}
+.ht tr.tb td{color:rgba(100,100,100,.95);background:rgba(128,128,128,.05)}
+.ht tr.sum td{font-weight:700;background:rgba(62,180,137,.12);border-top:2px solid rgba(62,180,137,.45)}
+.ht tr:hover td{background-color:rgba(62,180,137,.07)}
+</style>"""
+
+
+def hara_table_html(t: dict) -> str:
+    """Bảng HaraCRM giữ format gốc: tiêu đề 2 dòng, số phụ (6/23, ít mẫu), ô đỏ, dòng TB team / Tổng."""
+    headers = [_hara_split(h) if "\n" in str(h) else (str(h or ""), "") for h in (t.get("headers") or [])]
+    rows = [list(r) for r in t.get("rows") or []]
+    flags = t.get("flags") or [[0] * len(r) for r in rows]
+    width = max([len(headers)] + [len(r) for r in rows] + [0])
+    headers += [("", "")] * (width - len(headers))
+    text_cols = set()
+    for j in range(width):   # cột chữ (NV, Team…) canh trái
+        vals = [r[j] for r in rows if j < len(r) and str(r[j]).strip()]
+        if vals and sum(bool(re.match(r"^-?[\d.,]+\s*%?$|^—$", _hara_split(v)[0])) for v in vals) < len(vals) / 2:
+            text_cols.add(j)
+    def hcls(j):
+        main, sub = headers[j]
+        p_, ps = _plain(main).replace(" ", ""), _plain(sub)
+        c = ["l"] if j in text_cols else []
+        if p_ in ("lead→win", "lead->win"):
+            c.append("win")
+        elif "ty le" in ps:
+            c.append("rt")
+        elif "stage" in ps:
+            c.append("stg")
+        return " ".join(c)
+    hc = [hcls(j) for j in range(width)]
+    head = "".join(f'<th class="{hc[j]}">{escape(m).replace("→", "→<wbr>")}' + (f'<span class="s">{escape(sb)}</span>' if sb else "") + "</th>"
+                   for j, (m, sb) in enumerate(headers))
+    body = []
+    for r, fl in zip(rows, flags):
+        r = r + [""] * (width - len(r))
+        first = _plain(" ".join(str(x) for x in r[:2]))
+        rc = "sum" if first.startswith("tong") else ("tb" if first.startswith(("tb ", "trung binh")) else "")
+        tds = []
+        for j, v in enumerate(r):
+            main, sub = _hara_split(v)
+            cl = [c for c in hc[j].split() if c in ("l", "win")]
+            if j < len(fl) and fl[j]:
+                cl.append("bad")
+            sub_h = (f'<span class="s{" lo" if "mau" in _plain(sub) else ""}">{escape(sub)}</span>' if sub else "")
+            tds.append(f'<td class="{" ".join(cl)}">{escape(main)}{sub_h}</td>')
+        body.append(f'<tr class="{rc}">' + "".join(tds) + "</tr>")
+    return (f'{HARA_CSS}<div style="overflow-x:auto"><table class="ht"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{"".join(body)}</tbody></table></div>')
+
+
 def page_hara():
     if DEMO:
         st.info("Trang này hiện số lấy từ HaraCRM — chưa có ở chế độ demo.")
@@ -2242,7 +2324,8 @@ def page_hara():
     pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
                                 key="hara_period", label_visibility="collapsed") or labels[-1]
     per = next(p_ for p_ in periods if p_["label"] == pick)
-    st.caption(f"Kỳ: **{per.get('filter') or pick}** · cập nhật {at_:%H:%M %d/%m}.")
+    filt_ = re.sub(r"\s*Đổi bộ lọc\s*", " ", str(per.get("filter") or "")).strip()
+    st.caption(f"Kỳ: **{filt_ or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
     h = {"tables": per.get("tables", [])}
@@ -2253,27 +2336,10 @@ def page_hara():
         st.warning("Dữ liệu HaraCRM không có bảng nào đúng tên cần lấy "
                    f"({', '.join(secret('haracrm', 'tables', ['Xếp hạng funnel', 'NV trong phạm vi lọc']))}).")
     for t in shown:
-        headers = list(t.get("headers") or [])
-        rows = [list(r) for r in t.get("rows") or []]
-        width = max([len(headers)] + [len(r) for r in rows])
-        headers += [""] * (width - len(headers))
-        cols, seen = [], {}
-        for c in headers:   # tên cột trùng/rỗng → thêm số để không lỗi
-            c = c or "—"
-            seen[c] = seen.get(c, 0) + 1
-            cols.append(c if seen[c] == 1 else f"{c} ({seen[c]})")
-        df = pd.DataFrame([r + [""] * (width - len(r)) for r in rows], columns=cols)
         st.markdown(f"**{t.get('title') or 'Bảng'}** · _{t.get('tab', '')}_")
         if t.get("sub"):
             st.caption(t["sub"])
-        hl = [c for c in df.columns if _plain(c).replace(" ", "") in ("lead→win", "lead->win")]
-        sty = (df.style.hide(axis="index")
-               .set_table_styles([{"selector": "th", "props": [("white-space", "normal"), ("font-weight", "700"),
-                                                                ("background-color", "rgba(62, 180, 137, 0.18)")]}])
-               .map_index(lambda _: "font-weight: 700; background-color: rgba(62, 180, 137, 0.18);", axis="columns"))
-        if hl:
-            sty = sty.set_properties(subset=hl, **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
-        st.table(sty)
+        st.html(hara_table_html(t))
 
 
 def page_leads():
