@@ -2383,10 +2383,12 @@ def page_trends():
                          hide_index=True, width="stretch",
                          column_config={"Ngày": st.column_config.DatetimeColumn(format=fmt_, pinned=True)})
 
-        t1, t2 = st.tabs(["📞 Cuộc gọi", "📅 Meeting"])
+        t1, t2, t3 = st.tabs(["📞 Cuộc gọi", "🤝 Deal mới", "📅 Meeting"])
         with t1:
             show(by_day(calls_))
         with t2:
+            show(by_day(data["deals_new"]))
+        with t3:
             show(by_day(mts_))
     c1, c2 = st.columns(2)
     with c1:
