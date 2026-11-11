@@ -2377,11 +2377,18 @@ def page_trends():
             return out.sort_values("Ngày", ascending=False)
 
         def show(tbl):
+            num_ = sales_ + ["Tổng"]
+            tbl = tbl.copy()
+            tbl["Ngày"] = tbl["Ngày"].dt.strftime("%d/%m %H:%M" if d_start == d_end else "%d/%m/%Y")
+            tot = pd.DataFrame([{"Ngày": "TỔNG", **{c: int(tbl[c].sum()) for c in num_}}])
+            tbl = pd.concat([tot, tbl], ignore_index=True)       # dòng tổng theo từng Sale ở trên cùng
             st.dataframe(tbl.style.set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)",
                                                                        "font-weight": "bold"})
-                         .map(lambda v: "color: rgba(128, 128, 128, 0.5);" if v == 0 else "", subset=sales_),
+                         .map(lambda v: "color: rgba(128, 128, 128, 0.5);" if v == 0 else "", subset=sales_)
+                         .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
+                                if r["Ngày"] == "TỔNG" else [""] * len(r), axis=1),
                          hide_index=True, width="stretch",
-                         column_config={"Ngày": st.column_config.DatetimeColumn(format=fmt_, pinned=True)})
+                         column_config={"Ngày": st.column_config.TextColumn(pinned=True)})
 
         t1, t2, t3 = st.tabs(["📞 Cuộc gọi", "🤝 Deal mới", "📅 Meeting"])
         with t1:
