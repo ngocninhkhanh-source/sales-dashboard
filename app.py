@@ -1942,7 +1942,9 @@ for s in STATUS_COLORS:
         st_counts[s] = 0
 
 stages, closed_stages = lead_stage_config()
-closed_l = [c.lower() for c in closed_stages]
+# Stage không tính vào "Lead tồn": Unqualified (đã loại) + Qualified (đã chuyển thành deal)
+not_open_stages = list(secret("bitrix24", "lead_not_open_stages", closed_stages + ["Qualified"]))
+closed_l = [c.lower() for c in not_open_stages]
 open_stages = [s_ for s_ in stages if s_.lower() not in closed_l]
 stage_tbl = (data["lead_stages"].pivot_table(index="sale", columns="stage", values="n", aggfunc="sum")
              .reindex(index=sales_in_view, columns=stages).fillna(0).astype(int))
@@ -2344,7 +2346,7 @@ def page_hara():
 
 def page_leads():
     st.caption(f"Số lead **tạo trong tháng này và tháng trước** hiện đang nằm ở từng stage trên Bitrix24. "
-               f"Cột **Tồn** = tổng các stage trừ {', '.join(closed_stages) or '—'}.")
+               f"Cột **Tồn** = tổng các stage trừ {', '.join(not_open_stages) or '—'}.")
     _snap = globals().get("snap")
     if _snap and _snap.get("missingSources"):
         st.warning(f"Không thấy nguồn {_snap['missingSources']} trên Bitrix24 — sửa dòng `lead_exclude_sources` "
@@ -2578,7 +2580,7 @@ def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
             "Sale": st.column_config.TextColumn("Sale", pinned=True),
             "Tồn": st.column_config.NumberColumn(help="Tổng lead chưa ra kết quả"),
             "Tổng": st.column_config.NumberColumn(help="Tổng tất cả stage trong bảng"),
-            **{c: st.column_config.NumberColumn(help="Không tính vào Tồn") for c in closed_stages if c in stages},
+            **{c: st.column_config.NumberColumn(help="Không tính vào Tồn") for c in not_open_stages if c in stages},
         }
     )
     
