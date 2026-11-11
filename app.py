@@ -2056,7 +2056,6 @@ def page_overview():
         "Sale": lb["sale"],
         "KPI (₫)": kpi,
         "Doanh thu (₫)": lb["revenue"],
-        "✏️ Điều chỉnh (₫)": lb["adj_amount"],
         "% KPI": (lb["revenue"] / kpi.replace(0, np.nan) * 100).round(1),
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
@@ -2067,7 +2066,7 @@ def page_overview():
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
     })
     if len(view) > 1:   # dòng TỔNG toàn team
-        tot = {c: view[c].sum() for c in ["Doanh thu (₫)", "✏️ Điều chỉnh (₫)", "Est Doanh thu", "Lead mới", "Lead tồn", "Deal mới",
+        tot = {c: view[c].sum() for c in ["Doanh thu (₫)", "Est Doanh thu", "Lead mới", "Lead tồn", "Deal mới",
                                           "Deal won", "Cuộc gọi", "Meeting", "Đã recap", "Thiếu recap"]}
         k_sum = kpi.sum(min_count=1)
         held_t = tot["Đã recap"] + tot["Thiếu recap"]
@@ -2080,10 +2079,6 @@ def page_overview():
         view = pd.concat([view, pd.DataFrame([tot])[view.columns]], ignore_index=True)
     view["KPI (₫)"] = kpi.map(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."))
     money = ["Doanh thu (₫)", "Est Doanh thu", "APU (₫)"]
-    if ADJ_ALL.empty:
-        view = view.drop(columns=["✏️ Điều chỉnh (₫)"])
-    else:
-        money.append("✏️ Điều chỉnh (₫)")
     st.dataframe(view.style
                  .format(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."), subset=money)
                  .set_properties(subset=["Doanh thu (₫)"],
@@ -2092,13 +2087,12 @@ def page_overview():
                         if r["Sale"] == "TỔNG" else [""] * len(r), axis=1),
                  hide_index=True, width="stretch", column_config={
         "Sale": st.column_config.TextColumn(pinned=True),
-        "Doanh thu (₫)": st.column_config.NumberColumn(),
+        "Doanh thu (₫)": st.column_config.NumberColumn(
+            help="Đã gồm phần sửa tay ở trang 💰 Danh sách deal won (sửa số tiền deal / deal ngoài Bitrix)"),
         "KPI (₫)": st.column_config.TextColumn(
                                                  help=f"KPI doanh thu/tháng × {n_months} tháng trong kỳ" if n_months > 1
                                                  else "KPI doanh thu của tháng"),
         "APU (₫)": st.column_config.NumberColumn(help="Doanh thu ÷ số deal won"),
-        "✏️ Điều chỉnh (₫)": st.column_config.NumberColumn(
-            help="Phần doanh thu nhập tay (đã cộng vào cột Doanh thu) — lệch số Bitrix hoặc doanh thu ngoài Bitrix"),
         "% KPI": st.column_config.ProgressColumn("% KPI", format="%.0f%%", min_value=0, max_value=100,
                                                  help="Doanh thu ÷ KPI (loading KPI)"),
         "Est Doanh thu": st.column_config.NumberColumn(),
@@ -2135,27 +2129,35 @@ def _owner_unlock(key: str) -> bool:
 
 
 def _saved(where: str, err: str, editor_key: str):
-    if err and where != "Google Drive":
-        st.warning(f"Đã lưu tạm ({where}) — chưa lưu được lên Google Drive: {err}")
-    else:
-        st.session_state.pop(editor_key, None)
-        st.rerun()
+    st.session_state["_adj_msg"] = (f"⚠️ Đã lưu tạm ({where}) — chưa lưu được lên Google Drive: {err}"
+                                    if err and where != "Google Drive" else "✅ Đã lưu.")
+    st.session_state.pop(editor_key, None)
+    st.rerun()
 
 
 def _render_won_edit(w_bitrix: pd.DataFrame):
     """Trang Danh sách deal won: sửa số tiền deal Bitrix + thêm deal won ngoài Bitrix."""
-    with st.expander("✏️ Sửa số tiền / thêm deal won ngoài Bitrix", expanded=False):
+    with st.expander("✏️ Sửa số tiền / thêm deal won ngoài Bitrix",
+                     expanded=bool(st.session_state.get("_adj_msg"))):
         if not _owner_unlock("won"):
             return
+        msg_ = st.session_state.pop("_adj_msg", "")
+        if msg_:
+            (st.warning if msg_.startswith("⚠️") else st.success)(msg_)
         t1, t2 = st.tabs(["✏️ Sửa số tiền deal Bitrix", "➕ Thêm deal won ngoài Bitrix"])
         with t1:
             st.caption("Nhập **Số tiền đúng** cho deal bị lệch (để trống = dùng số Bitrix). Doanh thu ở bảng "
-                       "Hiệu suất theo Sale tự cộng phần chênh lệch.")
+                       "Hiệu suất theo Sale tự cộng phần chênh lệch. **Nhập sai?** Bấm đúp vào ô để sửa lại số, hoặc "
+                       "xoá trống ô để trả về số Bitrix, rồi bấm **💾 Lưu số tiền**. Deal đã sửa nằm trên cùng.")
             if w_bitrix.empty:
                 st.info("Không có deal won Bitrix nào với bộ lọc hiện tại.")
             else:
                 ov = dict(OVR)
-                src = w_bitrix.sort_values(["day", "bitrix_amount"], ascending=[False, False])
+                src = w_bitrix.assign(_e=w_bitrix["id"].astype(str).isin(ov.keys()))
+                n_e = int(src["_e"].sum())
+                if n_e and st.toggle(f"Chỉ hiện {n_e} deal đã sửa", key="ovr_only_edited"):
+                    src = src[src["_e"]]
+                src = src.sort_values(["_e", "day", "bitrix_amount"], ascending=[False, False, False])
                 tbl = pd.DataFrame({
                     "ID": src["id"].astype(str).values, "Ngày": src["day"].values, "Sale": src["sale"].values,
                     "Tên deal": src["title"].values, "Bitrix ghi (₫)": src["bitrix_amount"].values,
@@ -2184,7 +2186,8 @@ def _render_won_edit(w_bitrix: pd.DataFrame):
                     _saved(*save_adjustments(overrides=ov), "ovr_editor")
         with t2:
             st.caption("Doanh thu không có trên Bitrix (hoặc bù lệch chung). Tính vào tháng của cột **Ngày**. "
-                       "Thêm dòng ở cuối bảng; xoá dòng: tick ô đầu dòng rồi bấm 🗑.")
+                       "Thêm dòng ở cuối bảng. **Nhập sai?** Bấm đúp vào ô để sửa; xoá dòng: tick ô đầu dòng rồi bấm 🗑. "
+                       "Xong bấm **💾 Lưu deal thêm tay**.")
             cur = ADJ.sort_values("day", ascending=False).reset_index(drop=True)
             cur["source"] = cur["source"].where(cur["source"].isin(ADJ_SOURCES), None)
             ed2 = st.data_editor(
