@@ -751,6 +751,23 @@ def save_snapshot(snap: dict, name: str = SNAP_NAME) -> tuple[str, str]:
     except Exception as e:
         return "bộ nhớ tạm", f"{type(e).__name__}: {e}"
 
+ADJ_NAME = "sales-dashboard-revenue-adjust.json"
+ADJ_COLS = ["day", "sale", "amount", "deals", "source", "package", "note"]
+ADJ_SOURCES = ["Sale tự tìm", "MKT", "Hotline/Chat", "Partner", "Up sell"]
+
+
+def load_adjustments() -> pd.DataFrame:
+    """Điều chỉnh doanh thu thủ công (lưu trên Google Drive của leader, file riêng)."""
+    snap_, _, _ = get_snapshot(ADJ_NAME)
+    df = pd.DataFrame((snap_ or {}).get("rows", []), columns=ADJ_COLS)
+    df["day"] = pd.to_datetime(df["day"], errors="coerce").dt.date
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+    df["deals"] = pd.to_numeric(df["deals"], errors="coerce").fillna(0).astype(int)
+    for c in ("sale", "source", "package", "note"):
+        df[c] = df[c].fillna("").astype(str)
+    return df[df["day"].notna() & (df["sale"] != "")].reset_index(drop=True)
+
+
 def decode_payload(raw: str, param: str = "bx") -> dict:
     """Giải mã dữ liệu nút bookmarklet gửi sang (base64url, có thể nén deflate với tiền tố 'z')."""
     raw = raw.strip()
@@ -1822,6 +1839,23 @@ if roster.empty:
 
 if data["revenue"].empty and not globals().get("snap"):   # webhook / demo: doanh thu theo deal won
     data["revenue"] = data["deals_won"][["ts", "sale", "amount"]]
+try:
+    ADJ = load_adjustments()
+except Exception as e:
+    ADJ = pd.DataFrame(columns=ADJ_COLS)
+    problems.append(f"**Điều chỉnh doanh thu** — {type(e).__name__}: {e}")
+ADJ_IN = ADJ[(ADJ["day"] >= d_start) & (ADJ["day"] <= d_end)] if not ADJ.empty else ADJ
+if not ADJ_IN.empty:   # cộng điều chỉnh thủ công vào doanh thu + danh sách deal won
+    _ts = pd.to_datetime(ADJ_IN["day"]).dt.tz_localize(TZ) + pd.Timedelta(hours=12)
+    _rv = pd.DataFrame({"ts": _ts.values, "sale": ADJ_IN["sale"].values, "amount": ADJ_IN["amount"].values})
+    data["revenue"] = _rv if data["revenue"].empty else pd.concat([data["revenue"], _rv], ignore_index=True)
+    _wl = pd.DataFrame({
+        "sale": ADJ_IN["sale"].values, "id": "", "amount": ADJ_IN["amount"].values,
+        "title": ["✏️ Điều chỉnh thủ công" + (f" · {n}" if n else "") for n in ADJ_IN["note"]],
+        "source": ADJ_IN["source"].replace("", "(Điều chỉnh thủ công)").values, "day": ADJ_IN["day"].values,
+        "link": "", "package": ADJ_IN["package"].replace("", "(Chưa chọn gói)").values,
+        "pu": ADJ_IN["deals"].values})
+    data["won_list"] = _wl if data["won_list"].empty else pd.concat([data["won_list"], _wl], ignore_index=True)
 sales_in_view = picked or roster["sale"].tolist()
 for k in data:
     if "sale" in data[k].columns:
@@ -1881,6 +1915,10 @@ lb = (
            left_on="sale", right_index=True, how="left")
     .fillna(0)
 )
+_adj_g = ADJ_IN.groupby("sale") if not ADJ_IN.empty else None
+lb["adj_amount"] = lb["sale"].map(_adj_g["amount"].sum()).fillna(0.0) if _adj_g is not None else 0.0
+lb["deals_won"] = (lb["deals_won"] + (lb["sale"].map(_adj_g["deals"].sum()).fillna(0) if _adj_g is not None else 0)
+                   ).clip(lower=0)
 int_cols = ["leads_new", "lead_open", "deals_new", "deals_won", "calls", "meetings", "recap_done", "recap_miss"]
 lb[int_cols] = lb[int_cols].astype(int)
 held = lb["recap_done"] + lb["recap_miss"]
@@ -1978,6 +2016,7 @@ def page_overview():
         "Sale": lb["sale"],
         "KPI (₫)": kpi,
         "Doanh thu (₫)": lb["revenue"],
+        "✏️ Điều chỉnh (₫)": lb["adj_amount"],
         "% KPI": (lb["revenue"] / kpi.replace(0, np.nan) * 100).round(1),
         "Est Doanh thu": lb["est_revenue"],
         "Lead mới": lb["leads_new"], "Lead tồn": lb["lead_open"],
@@ -1988,7 +2027,7 @@ def page_overview():
         "Tỷ lệ recap": lb["recap_rate"].map(lambda v: "—" if pd.isna(v) else f"{v:.0%}"),
     })
     if len(view) > 1:   # dòng TỔNG toàn team
-        tot = {c: view[c].sum() for c in ["Doanh thu (₫)", "Est Doanh thu", "Lead mới", "Lead tồn", "Deal mới",
+        tot = {c: view[c].sum() for c in ["Doanh thu (₫)", "✏️ Điều chỉnh (₫)", "Est Doanh thu", "Lead mới", "Lead tồn", "Deal mới",
                                           "Deal won", "Cuộc gọi", "Meeting", "Đã recap", "Thiếu recap"]}
         k_sum = kpi.sum(min_count=1)
         held_t = tot["Đã recap"] + tot["Thiếu recap"]
@@ -2001,6 +2040,10 @@ def page_overview():
         view = pd.concat([view, pd.DataFrame([tot])[view.columns]], ignore_index=True)
     view["KPI (₫)"] = kpi.map(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."))
     money = ["Doanh thu (₫)", "Est Doanh thu", "APU (₫)"]
+    if ADJ_IN.empty:
+        view = view.drop(columns=["✏️ Điều chỉnh (₫)"])
+    else:
+        money.append("✏️ Điều chỉnh (₫)")
     st.dataframe(view.style
                  .format(lambda v: "" if pd.isna(v) else f"{v:,.0f}".replace(",", "."), subset=money)
                  .set_properties(subset=["Doanh thu (₫)"],
@@ -2014,6 +2057,8 @@ def page_overview():
                                                  help=f"KPI doanh thu/tháng × {n_months} tháng trong kỳ" if n_months > 1
                                                  else "KPI doanh thu của tháng"),
         "APU (₫)": st.column_config.NumberColumn(help="Doanh thu ÷ số deal won"),
+        "✏️ Điều chỉnh (₫)": st.column_config.NumberColumn(
+            help="Phần doanh thu nhập tay (đã cộng vào cột Doanh thu) — lệch số Bitrix hoặc doanh thu ngoài Bitrix"),
         "% KPI": st.column_config.ProgressColumn("% KPI", format="%.0f%%", min_value=0, max_value=100,
                                                  help="Doanh thu ÷ KPI (loading KPI)"),
         "Est Doanh thu": st.column_config.NumberColumn(),
@@ -2023,7 +2068,63 @@ def page_overview():
     })
     st.download_button("⬇️ Tải bảng (CSV)", view.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"hieu_suat_sale_{d_start:%Y%m%d}_{d_end:%Y%m%d}.csv", mime="text/csv")
+    if not ADJ_IN.empty:
+        st.caption(f"✏️ Doanh thu đã gồm **{len(ADJ_IN)} điều chỉnh thủ công** trong kỳ "
+                   f"(tổng {'+' if ADJ_IN['amount'].sum() >= 0 else ''}{fmt_vnd(ADJ_IN['amount'].sum())}"
+                   f"{', ' + format(int(ADJ_IN['deals'].sum()), '+d') + ' deal won' if ADJ_IN['deals'].sum() else ''}).")
+    if OWNER:
+        _render_adjust_editor()
     _render_won_breakdown()
+
+
+def _render_adjust_editor():
+    """Chủ dashboard nhập tay doanh thu: bù lệch số Bitrix hoặc doanh thu không có trên Bitrix."""
+    with st.expander("✏️ Điều chỉnh doanh thu thủ công", expanded=False):
+        st.markdown(
+            "- **Lệch số Bitrix:** nhập **phần chênh lệch** (vd. Bitrix ghi 31.828.000 nhưng thực tế 33.000.000 → nhập "
+            "`1172000`; thừa thì nhập số âm). *Số deal won* để `0`.\n"
+            "- **Doanh thu ngoài Bitrix:** nhập số tiền, *Số deal won* = `1` (hoặc số deal tương ứng).\n"
+            "- Doanh thu được tính vào tháng của cột **Ngày**. Thêm dòng ở cuối bảng; xoá dòng: tick ô đầu dòng rồi "
+            "bấm 🗑. Xong bấm **💾 Lưu điều chỉnh**.")
+        sales_opts = list(roster["sale"])
+        cur = ADJ.sort_values("day", ascending=False).reset_index(drop=True)
+        cur["source"] = cur["source"].where(cur["source"].isin(ADJ_SOURCES), None)
+        ed = st.data_editor(
+            cur.rename(columns={"day": "Ngày", "sale": "Sale", "amount": "Số tiền (₫)", "deals": "Số deal won",
+                                "source": "Nguồn", "package": "Gói dịch vụ", "note": "Ghi chú"}),
+            num_rows="dynamic", hide_index=True, width="stretch", key="adj_editor",
+            column_config={
+                "Ngày": st.column_config.DateColumn(format="DD/MM/YYYY", default=now.date(), required=True),
+                "Sale": st.column_config.SelectboxColumn(options=sales_opts, required=True, width="medium"),
+                "Số tiền (₫)": st.column_config.NumberColumn(format="localized", step=1000, default=0,
+                                                             help="Số âm để trừ bớt"),
+                "Số deal won": st.column_config.NumberColumn(step=1, default=0, min_value=-50, max_value=50,
+                                                             help="Cộng thêm vào số deal won (0 nếu chỉ bù lệch tiền)"),
+                "Nguồn": st.column_config.SelectboxColumn(options=ADJ_SOURCES,
+                                                          help="Để chia vào bảng doanh thu theo Source"),
+                "Gói dịch vụ": st.column_config.TextColumn(),
+                "Ghi chú": st.column_config.TextColumn(width="large", help="Lý do điều chỉnh / tên khách"),
+            })
+        if st.button("💾 Lưu điều chỉnh", type="primary", key="adj_save"):
+            rows = []
+            for r in ed.itertuples(index=False):
+                day_, sale_, amt_, deals_ = r[0], r[1], r[2], r[3]
+                if pd.isna(day_) or not sale_:
+                    continue
+                amt_ = float(0 if pd.isna(amt_) else amt_)
+                deals_ = int(0 if pd.isna(deals_) else deals_)
+                if not amt_ and not deals_:
+                    continue
+                rows.append({"day": pd.Timestamp(day_).date().isoformat(), "sale": str(sale_), "amount": amt_,
+                             "deals": deals_, "source": "" if pd.isna(r[4]) or r[4] is None else str(r[4]),
+                             "package": "" if pd.isna(r[5]) or r[5] is None else str(r[5]).strip(),
+                             "note": "" if pd.isna(r[6]) or r[6] is None else str(r[6]).strip()})
+            where, err = save_snapshot({"at": int(_time.time() * 1000), "rows": rows}, ADJ_NAME)
+            if err and where != "Google Drive":
+                st.warning(f"Đã lưu tạm ({where}) — chưa lưu được lên Google Drive: {err}")
+            else:
+                st.session_state.pop("adj_editor", None)
+                st.rerun()
 
 
 def page_hara():
@@ -2864,11 +2965,13 @@ def _won_pivot(w: pd.DataFrame, col: str, order: list, sales_rows: list, team: s
     fmt = lambda v: f"{v:,.0f}".replace(",", ".")
     groups = [("TỔNG", "All RE")] + [(g, "RE") for g in order]
 
+    pu_ = lambda d: int(d["pu"].fillna(1).sum()) if "pu" in d else len(d)
+
     def cells(df_):
-        out = [(len(df_), df_["amount"].sum(), True)]
+        out = [(pu_(df_), df_["amount"].sum(), True)]
         for g in order:
             sub = df_[df_[col] == g]
-            out.append((len(sub), sub["amount"].sum(), False))
+            out.append((pu_(sub), sub["amount"].sum(), False))
         return out
 
     head1 = '<th rowspan="2" class="s">Sale</th>' + "".join(
@@ -2909,9 +3012,10 @@ def page_won_deals():
     if src_pick:
         w = w[w["source"].astype(str).isin(src_pick)]
     k = st.columns(3)
-    k[0].metric("🏆 Số deal won", fmt_int(len(w)))
+    n_won = int(w["pu"].fillna(1).sum()) if "pu" in w else len(w)
+    k[0].metric("🏆 Số deal won", fmt_int(n_won))
     k[1].metric("💰 Tổng tiền", fmt_vnd(w["amount"].sum()))
-    k[2].metric("📊 Trung bình / deal", fmt_vnd(w["amount"].mean() if len(w) else 0))
+    k[2].metric("📊 Trung bình / deal", fmt_vnd(w["amount"].sum() / n_won) if n_won > 0 else "—")
     st.caption(f"Deal Won có **{rf[1] if rf else 'ngày Won'}** trong kỳ {d_start:%d/%m/%Y} – {d_end:%d/%m/%Y}. "
                "Bấm **Mở deal ↗** để xem deal trên Bitrix24.")
     if w.empty:
@@ -3213,7 +3317,6 @@ pages = {"Tổng quan": [
     st.Page(page_leads, title="Lead tồn theo stage", icon="🗂️", url_path="lead-ton"),
     st.Page(page_deal_open, title="Deal tồn theo stage", icon="📂", url_path="deal-ton"),
     st.Page(page_meetings, title="Meeting & recap", icon="✉️", url_path="meeting-recap"),
-    st.Page(page_all_recap_emails, title="Danh sách email recap", icon="📑", url_path="danh-sach-recap"),
     st.Page(page_trends, title="Xu hướng hoạt động", icon="📈", url_path="xu-huong"),
     st.Page(page_won_deals, title="Danh sách deal won", icon="💰", url_path="deal-won"),
 ]}
