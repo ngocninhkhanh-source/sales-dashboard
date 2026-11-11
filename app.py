@@ -2362,7 +2362,7 @@ def _link_html(text: str, url: str) -> str:
     return f'<a href="{escape(url)}" target="_blank">{t}</a>' if url else t
 
 
-def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int = 15):
+def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int = 15, warn=None):
     """Bảng ngày × Sale; rê chuột vào ô số hiện danh sách mục (deal / meeting) của ô đó."""
     t0, t1 = to_dt_range(d_start, d_end)
     hourly = d_start == d_end
@@ -2389,7 +2389,8 @@ def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int
                       for r in sub.head(max_items).itertuples())
         more = f"<li class=m>… và {n - max_items} mục nữa</li>" if n > max_items else ""
         side = "r" if ci >= len(cols) / 2 else "l"
-        return (f'<td class="h{" b" if bold else ""}"><span class=n>{n}</span>'
+        w_ = " w" if warn is not None and warn(sub) else ""
+        return (f'<td class="h{" b" if bold else ""}{w_}"><span class=n>{n}</span>'
                 f'<div class="pop {side}"><ul>{lis}{more}</ul></div></td>')
 
     head = "<th>Ngày</th>" + "".join(f"<th>{escape(c)}</th>" for c in cols)
@@ -2410,6 +2411,7 @@ def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int
 .ht td.z{{color:rgba(128,128,128,.5)}}
 .ht td.h{{position:relative;cursor:help}}
 .ht td.h .n{{color:rgb(28,131,225);font-weight:700;border-bottom:1px dashed rgb(28,131,225)}}
+.ht td.h.w .n{{color:rgb(240,128,30);border-bottom-color:rgb(240,128,30)}}
 .ht td:last-child{{background:rgba(255,193,7,.22);font-weight:700}}
 .ht tr.tot td{{background:rgba(62,180,137,.18);font-weight:700}}
 .ht .pop{{display:none;position:absolute;z-index:999;top:100%;min-width:280px;max-width:420px;text-align:left;
@@ -2492,8 +2494,11 @@ def page_trends():
                 st.caption("Rê chuột để xem tên deal cần dữ liệu mới: leader cài lại nút 📥 Cập nhật Bitrix.")
                 show(by_day(data["deals_new"]))
         with t3:
-            st.caption("Rê chuột vào ô số để xem danh sách meeting.")
-            _hover_day_table(mts_, sales_, lambda r: f"{escape(str(r.title))} · <i>{escape(str(r.status))}</i>")
+            st.markdown("Rê chuột vào ô số để xem danh sách meeting · "
+                        "<span style='color:rgb(240,128,30);font-weight:700'>số màu cam</span> = có meeting "
+                        "**thiếu recap**.", unsafe_allow_html=True)
+            _hover_day_table(mts_, sales_, lambda r: f"{escape(str(r.title))} · <i>{escape(str(r.status))}</i>",
+                             warn=lambda sub: bool((sub["status"] == ST_MISS).any()))
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**📞 Số cuộc gọi**")
