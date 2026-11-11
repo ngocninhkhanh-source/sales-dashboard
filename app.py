@@ -668,13 +668,15 @@ for(const n in dopen)dopen[n].slice().sort((a,b)=>String(b[7]).localeCompare(Str
 for(const n in dwon)dwon[n].forEach(x=>push(x[0]));for(const n in dlostList)dlostList[n].forEach(x=>push(x[0]));
 const lim=ids.slice(0,C.commentMax||1500);const qs=p=>{const q=new URLSearchParams();for(const k in p)enc(q,k,p[k]);return q.toString();};
 const sel=['ID','CREATED','AUTHOR_ID','COMMENT'];
+const nz=t=>String(t||'').toLowerCase().replace(/đ/g,'d').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
+const cmEx=(C.cmExcl||[]).map(nz).filter(Boolean);const cmSkip=t=>{const z=nz(t);return cmEx.some(e=>z.includes(e));};
 for(let i=0;i<lim.length;i+=50){const part=lim.slice(i,i+50);const cmd={};
 for(const id of part)cmd['c'+id]='crm.timeline.comment.list?'+qs({filter:{ENTITY_ID:id,ENTITY_TYPE:'deal'},select:sel,order:{ID:'DESC'}});
 say('Đang đọc comment trên deal: '+Math.min(i+50,lim.length)+' / '+lim.length);
 const d=await call('batch',{halt:0,cmd:cmd});const R=(d.result||{}).result||{},T=(d.result||{}).result_total||{};
 for(const id of part){let a=R['c'+id]||[];const tot=+T['c'+id]||a.length;
 if(tot>50&&a.length>1&&+a[0].ID<+a[a.length-1].ID){const r=await call('crm.timeline.comment.list',{filter:{ENTITY_ID:id,ENTITY_TYPE:'deal'},select:sel,start:Math.floor((tot-1)/50)*50}).catch(()=>({}));a=a.concat(r.result||[]);}
-a.sort((x,y)=>+y.ID-+x.ID);const top=a.map(x=>[String(x.CREATED||''),String(x.AUTHOR_ID||''),clean(x.COMMENT).slice(0,C.commentLen||600)]).filter(x=>x[2]).slice(0,C.commentN||5);
+a.sort((x,y)=>+y.ID-+x.ID);const top=a.map(x=>[String(x.CREATED||''),String(x.AUTHOR_ID||''),clean(x.COMMENT).slice(0,C.commentLen||600)]).filter(x=>x[2]&&!cmSkip(x[2])).slice(0,C.commentN||5);
 if(top.length)dcm[id]=top;}
 await sleep(400);}
 const unk=[...new Set(Object.values(dcm).flat().map(x=>x[1]).filter(x=>x&&!uname[x]))];
@@ -863,11 +865,26 @@ DEAL_ALL_COLS = ["id", "sale", "title", "status", "stage", "amount", "modified_t
                  "comments"]
 
 
+COMMENT_EXCLUDE_DEFAULT = ["Đã reset trạng thái deal sau khi Copy deal"]
+
+
+def comment_exclude() -> list[str]:
+    """Comment tự động của hệ thống (chứa một trong các cụm này) không hiển thị."""
+    return [str(x) for x in (secret("bitrix24", "comment_exclude", COMMENT_EXCLUDE_DEFAULT) or []) if str(x).strip()]
+
+
+def _cm_skip(text: str) -> bool:
+    z = " ".join(norm_text(text).split())
+    return any(" ".join(norm_text(e).split()) in z for e in comment_exclude())
+
+
 def _cm_rows(items) -> list[tuple[str, str, str]]:
-    """[(thời gian 'dd/mm/yyyy HH:MM', người viết, nội dung)] — mới nhất trước."""
+    """[(thời gian 'dd/mm/yyyy HH:MM', người viết, nội dung)] — mới nhất trước, bỏ comment tự động."""
     out = []
     for it in items if isinstance(items, (list, tuple)) else []:
         created, author, text = (list(it) + ["", "", ""])[:3]
+        if _cm_skip(text):
+            continue
         ts = pd.to_datetime(created, errors="coerce", utc=True)
         out.append((ts.tz_convert(TZ).strftime("%d/%m/%Y %H:%M") if not pd.isna(ts) else "", str(author or ""),
                     str(text or "")))
@@ -1092,7 +1109,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 20  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 21  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1105,7 +1122,7 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "reason": _cfg_list(secret("bitrix24", "unqual_reason_field", "")),
            "revDate": str(secret("bitrix24", "revenue_date_field", "Ngày ghi nhận doanh số") or "Ngày ghi nhận doanh số"),
            "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION,
-           "comments": bool(secret("bitrix24", "read_comments", True)),
+           "comments": bool(secret("bitrix24", "read_comments", True)), "cmExcl": comment_exclude(),
            "pkg": str(secret("bitrix24", "package_field", "") or ""),
            "calls": bool(secret("bitrix24", "read_calls", True)),
            "callTypes": [int(x) for x in secret("bitrix24", "call_types", [])]}
