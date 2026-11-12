@@ -517,6 +517,12 @@ def _guests(ev: dict, owner: str, internal: list[str]) -> list[str]:
     return out
 
 
+def _plain(t) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
+    return " ".join("".join(c for c in t if unicodedata.category(c) != "Mn").split())
+
+
 def norm_text(t: str) -> str:
     import unicodedata
     t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
@@ -2485,12 +2491,6 @@ def trend_chart(df: pd.DataFrame, color: str, label: str):
 
 KPI_DEFAULT = {"Võ Minh Hiếu": 100_000_000, "Nguyễn Đức Toàn": 100_000_000,
                "Nguyễn Thị Tuyết Nhi": 100_000_000, "Lê Thị Ngọc Châu": 50_000_000}
-
-
-def _plain(t) -> str:
-    import unicodedata
-    t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
-    return " ".join("".join(c for c in t if unicodedata.category(c) != "Mn").split())
 
 
 def kpi_month(sale: str):
