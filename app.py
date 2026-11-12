@@ -1153,7 +1153,7 @@ box.appendChild(btn);box.appendChild(x);
 
 HARA_SOURCES = ["Tất cả", "Nguồn công ty", "Sale tự tìm"]
 VC_SNAP = "sales-dashboard-voicecloud.json"
-VC_VERSION = 1
+VC_VERSION = 2
 VC_EXT_DEFAULT = {"1226": "Hiếu", "1021": "Toàn", "1177": "Nhi", "1008": "Châu"}   # máy lẻ VoiceCloud → Sale
 VC_SRC = r"""(async()=>{
 const C=__CFG__;
@@ -1178,15 +1178,21 @@ const firstRow=()=>{const t=tableOf(document);const r=t&&t.querySelector('tbody 
 const waitChange=async(before,ms)=>{for(let i=0;i<ms/400;i++){await sleep(400);if(firstRow()!==before)return true;}return false;};
 const btns=()=>[...document.querySelectorAll('button,a,input[type=submit],input[type=button]')].filter(vis);
 const searchBtn=()=>{const all=btns();const ex=all.find(b=>norm(T(b)||b.value)==='export');return all.find(b=>b.querySelector('.fa-search,.ti-search,.bi-search,[class*=search]'))||(ex&&ex.previousElementSibling&&vis(ex.previousElementSibling)?ex.previousElementSibling:null)||all.find(b=>/search|tim/.test(norm(T(b)||b.value)))||document.querySelector('form button[type=submit]');};
-let d=dts();
+let d=dts();let doc=document,live=true;const diag=[];
+diag.push('ô ngày: '+d.length+' · bảng cuộc gọi: '+(tableOf(document)?'có':'không')+' · form: '+(d[0]&&d[0].closest('form')?((d[0].closest('form').getAttribute('method')||'GET').toUpperCase()):'không'));
 if(d.length>=2&&d[0].value.trim().slice(0,10)>fmt(f0,'').trim()){
-  say('Đang đặt khoảng ngày '+fmt(f0,'00:00')+' → hôm nay rồi bấm tìm…\nNếu trang tải lại, hãy bấm nút 📞 lần nữa.');
+  say('Đang đặt khoảng ngày '+fmt(f0,'00:00')+' → hôm nay…');
   setV(d[0],fmt(f0,'00:00'));setV(d[1],fmt(now,'23:59'));await sleep(400);
-  const before=firstRow();const sb=searchBtn();if(!sb)throw new Error('Không thấy nút tìm (🔍) trên trang.');sb.click();
-  await waitChange(before,20000);await sleep(800);
+  const form=d[0].closest('form');let got=false;
+  if(form){try{const fd=new FormData(form);const sb=searchBtn();if(sb&&sb.name)fd.append(sb.name,sb.value||'');const meth=(form.getAttribute('method')||'GET').toUpperCase();const u=new URL(form.getAttribute('action')||location.href,location.href);const opt={credentials:'include'};
+    if(meth==='GET'){for(const [k,v] of fd.entries())u.searchParams.set(k,v);}else{opt.method='POST';opt.body=new URLSearchParams([...fd.entries()]);}
+    say('Đang tải danh sách cuộc gọi '+fmt(f0,'')+'→ hôm nay…');const pd_=new DOMParser().parseFromString(await (await fetch(u,opt)).text(),'text/html');
+    if(tableOf(pd_)&&pd_.querySelector('tbody tr')){doc=pd_;live=false;got=true;diag.push('tải qua form '+meth);}}catch(e){diag.push('form lỗi: '+e.message);}}
+  if(!got){sessionStorage.setItem('vcAgain','1');const before=firstRow();const sb=searchBtn();if(!sb)throw new Error('Không thấy nút tìm (🔍) trên trang.');say('Đã đặt ngày, đang bấm 🔍…\n⚠️ Nếu trang tải lại và khung này biến mất: bấm nút 📞 thêm 1 lần nữa.');sb.click();
+    const ch=await waitChange(before,20000);diag.push('bấm 🔍: '+(ch?'bảng đổi':'bảng không đổi'));await sleep(800);}
 }
-d=dts();const from=(d[0]&&d[0].value.trim())||'',to=(d[1]&&d[1].value.trim())||'';
-try{for(const s of [...document.querySelectorAll('select')].filter(vis)){const ops=[...s.options].map(o=>o.value);if(ops.length>=2&&ops.every(v=>/^-?\d+$/.test(v))&&ops.some(v=>+v>=25)){const mx=ops.includes('-1')?'-1':ops.reduce((a,b)=>+b>+a?b:a);if(s.value!==mx){const b=firstRow();s.value=mx;s.dispatchEvent(new Event('change',{bubbles:true}));try{if(window.jQuery)jQuery(s).trigger('change');}catch(e){}await waitChange(b,15000);await sleep(600);}}}}catch(e){}
+d=dts();const from=live?((d[0]&&d[0].value.trim())||''):fmt(f0,'00:00'),to=live?((d[1]&&d[1].value.trim())||''):fmt(now,'23:59');
+if(live)try{for(const s of [...document.querySelectorAll('select')].filter(vis)){const ops=[...s.options].map(o=>o.value);if(ops.length>=2&&ops.every(v=>/^-?\d+$/.test(v))&&ops.some(v=>+v>=25)){const mx=ops.includes('-1')?'-1':ops.reduce((a,b)=>+b>+a?b:a);if(s.value!==mx){const b=firstRow();s.value=mx;s.dispatchEvent(new Event('change',{bubbles:true}));try{if(window.jQuery)jQuery(s).trigger('change');}catch(e){}await waitChange(b,15000);await sleep(600);}}}}catch(e){}
 const ext=C.ext||{};const calls={},other={};const seen=new Set();let total=0,pages=0,firstDay='',lastDay='';
 const read=doc=>{const t=tableOf(doc);if(!t)return 0;const hs=[...(t.querySelector('thead tr:last-child')||t.rows[0]).children].map(c=>norm(T(c)));const ix=k=>hs.findIndex(h=>h===k||h.indexOf(k)>=0);
 const iD=ix('calldate'),iE=ix('caller id'),iDst=ix('destination'),iDur=ix('duration'),iTalk=ix('time calling'),iSt=ix('status');let n=0;
@@ -1197,20 +1203,22 @@ if(!firstDay||day<firstDay)firstDay=day;if(!lastDay||day>lastDay)lastDay=day;
 const s=ext[e];if(!s){other[e]=(other[e]||0)+1;continue;}const m=calls[s]||(calls[s]={});const v=m[day]||(m[day]=[0,0,0]);v[0]++;v[1]+=ok;v[2]+=talk;}return n;};
 const nextOf=doc=>{const c=[...doc.querySelectorAll('a,button,li')].filter(e=>{const tx=T(e);const lab=norm(e.getAttribute('aria-label')||e.getAttribute('title')||'');return (['»','›','>','→','Next','Sau','Tiếp','next'].includes(tx)||lab==='next'||lab.indexOf('next')===0)&&e.children.length<=2;});
 for(const e of c){const a=e.tagName==='LI'?e.querySelector('a,button'):e;if(!a)continue;const li=a.closest('li');const dis=(a.className+' '+(li?li.className:'')).indexOf('disabled')>=0||a.disabled||a.getAttribute('aria-disabled')==='true';if(!dis)return a;}return null;};
-let doc=document,live=true;
-for(let guard=0;guard<2000;guard++){pages++;const n=read(doc);say('Đang đọc trang '+pages+' · '+total+' cuộc gọi…');const nx=nextOf(doc);if(!nx)break;
+let stop=false;const stopB=document.createElement('button');stopB.innerText='⏹ Dừng & gửi phần đã đọc';stopB.style.cssText='margin-top:10px;padding:6px 12px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';stopB.onclick=()=>{stop=true;};
+const prog=t=>{say(t);box.appendChild(stopB);};
+for(let guard=0;guard<2000&&!stop;guard++){pages++;const n=read(doc);prog('Đang đọc trang '+pages+' · '+total+' cuộc gọi…');const nx=nextOf(doc);if(!nx){diag.push('hết trang ở trang '+pages);break;}
 const href=nx.getAttribute&&nx.getAttribute('href');
 if(href&&href!=='#'&&!/^javascript/i.test(href)){const u=new URL(href,location.href);const h=await (await fetch(u,{credentials:'include'})).text();doc=new DOMParser().parseFromString(h,'text/html');live=false;if(!tableOf(doc))break;}
 else{if(!live)break;const b=firstRow();nx.click();if(!(await waitChange(b,15000)))break;await sleep(300);}
 if(n===0&&pages>3)break;}
-if(!total){say('❌ Không đọc được cuộc gọi nào. Mở trang Report → Outgoings, bấm 🔍 để hiện danh sách rồi bấm nút lần nữa.');box.appendChild(closeBtn());return;}
+sessionStorage.removeItem('vcAgain');
+if(!total){say('❌ Không đọc được cuộc gọi nào. Mở trang Report → Outgoings, bấm 🔍 để hiện danh sách rồi bấm nút lần nữa.\nChẩn đoán: '+diag.join(' · ')+'\nChụp khung này gửi lại để chỉnh nút.');box.appendChild(closeBtn());return;}
 const data={v:1,kind:'vc',bv:C.bv,at:Date.now(),host:location.host,from:from||firstDay,to:to||lastDay,firstDay:firstDay,lastDay:lastDay,rows:total,pages:pages,calls:calls,sales:[...new Set(Object.values(ext))],other:other};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
 const viaUrl=(C.url+'?vx='+b64).length<6000;
 const per=Object.entries(calls).map(([s,m])=>s+' '+Object.values(m).reduce((a,v)=>a+v[0],0)).join(' · ');
 const oth=Object.values(other).reduce((a,b)=>a+b,0);
-say('✅ Đã đọc '+total+' cuộc gọi đi ('+pages+' trang, '+(from||firstDay)+' → '+(to||lastDay)+').\n'+per+(oth?'\n(Bỏ qua '+oth+' cuộc của máy lẻ khác)':'')+'\nBấm nút dưới để gửi sang dashboard.');
+say('✅ Đã đọc '+total+' cuộc gọi đi ('+pages+' trang, '+(from||firstDay)+' → '+(to||lastDay)+').\n'+per+(oth?'\n(Bỏ qua '+oth+' cuộc của máy lẻ khác)':'')+(stop?'\n⚠️ Đã dừng giữa chừng — số có thể thiếu.':'')+'\n('+diag.join(' · ')+')\nBấm nút dưới để gửi sang dashboard.');
 const btn=document.createElement('button');btn.innerText='📤 Gửi sang dashboard';btn.style.cssText='margin-top:10px;padding:8px 14px;background:rgb(42,120,214);color:white;border:0;border-radius:6px;font-weight:600;cursor:pointer';
 const ta=document.createElement('textarea');ta.value=b64;ta.readOnly=true;ta.style.cssText='display:block;width:340px;height:60px;margin-top:8px;font:11px monospace';
 const x=closeBtn();
