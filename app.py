@@ -1090,7 +1090,7 @@ def _cfg_list(v) -> list[str]:
 
 
 HARA_SNAP = "sales-dashboard-haracrm.json"
-HARA_VERSION = 4
+HARA_VERSION = 5
 HARA_SRC = r"""(async()=>{
 const C=__CFG__;
 const box=document.createElement('div');
@@ -1121,7 +1121,14 @@ const curMonth=()=>{const f=getFilt();const m=(f.match(/\d{1,2}\/(\d{1,2})\/\d{4
 const mBtn=m=>qa('button,a,span,div,li').filter(e=>vis(e)&&e.children.length<=1&&T(e)==='T'+m).pop();
 const openFilt=async()=>{const b=qa('button,a').filter(vis).find(e=>norm(T(e))==='doi bo loc');if(b){b.click();await sleep(900);}};
 const periods=[];let miss=[];const nowD=new Date();const want=[];for(let k=(C.months||2)-1;k>=0;k--){want.push(new Date(nowD.getFullYear(),nowD.getMonth()-k,1));}
-for(const d of want){const m=d.getMonth()+1;const label='Tháng '+m;const key=d.getFullYear()+'-'+String(m).padStart(2,'0');let btn=curMonth()===m?null:mBtn(m);if(!btn&&curMonth()!==m){await openFilt();btn=mBtn(m);}if(btn){say('Đang chọn '+label+' trên HaraCRM…');btn.click();let ok=false;for(let i=0;i<40;i++){await sleep(500);if(curMonth()===m){ok=true;break;}if(i===6){const ap=qa('button').filter(vis).find(e=>T(e)==='Áp dụng');if(ap)ap.click();}}if(!ok){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không chuyển được sang '+label});continue;}await sleep(1500);}else if(want.length>1&&curMonth()!==m){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không thấy nút T'+m});continue;}say('Đang đọc '+label+'…');const r=await readAll();miss=r.miss;periods.push({key:key,label:label,filter:getFilt(),tables:r.tables});}
+for(const d of want){const m=d.getMonth()+1;const label='Tháng '+m;const key=d.getFullYear()+'-'+String(m).padStart(2,'0');let btn=curMonth()===m?null:mBtn(m);if(!btn&&curMonth()!==m){await openFilt();btn=mBtn(m);}if(btn){say('Đang chọn '+label+' trên HaraCRM…');btn.click();let ok=false;for(let i=0;i<40;i++){await sleep(500);if(curMonth()===m){ok=true;break;}if(i===6){const ap=qa('button').filter(vis).find(e=>T(e)==='Áp dụng');if(ap)ap.click();}}if(!ok){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không chuyển được sang '+label});continue;}await sleep(1500);}else if(want.length>1&&curMonth()!==m){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không thấy nút T'+m});continue;}const srcs=C.sources||[];const sAll=srcs.map(norm);
+const srcBtn=l=>qa('button,a,span,div,label,li').filter(e=>vis(e)&&e.children.length<=1&&norm(T(e))===norm(l)&&e.parentElement&&sAll.every(x=>norm(T(e.parentElement.parentElement||e.parentElement)).indexOf(x)>=0)).sort((a,b)=>T(a.parentElement.parentElement||a.parentElement).length-T(b.parentElement.parentElement||b.parentElement).length)[0];
+const dx=()=>qa('span,div,p').filter(vis).map(T).filter(x=>x.length<300&&x.indexOf('Đang xem')>=0).sort((a,b)=>a.length-b.length)[0]||'';
+const ptab=[];let srcErr='';
+if(srcs.length&&srcBtn(srcs[0])){for(const sl of srcs){const b=srcBtn(sl);if(!b){srcErr+='Không thấy nút nguồn «'+sl+'». ';continue;}const before=dx();say('Đang đọc '+label+' · nguồn «'+sl+'»…');b.click();for(let i=0;i<12;i++){await sleep(500);if(dx()!==before)break;}await sleep(1200);const r=await readAll();miss=r.miss;for(const x of r.tables){x.src=sl;ptab.push(x);}}
+const b0=srcBtn(srcs[0]);if(b0){b0.click();await sleep(1500);}}
+else{say('Đang đọc '+label+'…');const r=await readAll();miss=r.miss;for(const x of r.tables)ptab.push(x);if(srcs.length)srcErr='Không thấy nút chọn Nguồn — chỉ lấy được nguồn đang chọn.';}
+periods.push({key:key,label:label,filter:getFilt(),tables:ptab,srcErr:srcErr});}
 const tables=periods.flatMap(p=>p.tables);const filt=periods.length?periods[periods.length-1].filter:getFilt();
 if(!tables.length){qa('x');const nT=qa('table').length,nR=qa('[role=table],[role=grid]').length,nI=document.querySelectorAll('iframe').length,nS=roots.length-1,has=roots.some(r=>norm(T(r.body||r)).indexOf(team)>=0);say('❌ Không thấy bảng nào có dòng của '+C.team+' trên trang này.\nChẩn đoán: bảng HTML '+nT+' · role=table '+nR+' · iframe '+nI+' · vùng con '+nS+' · thấy chữ '+C.team+': '+(has?'có':'không')+'.\nChụp khung này gửi lại để chỉnh nút.');const x=document.createElement('button');x.innerText='Đóng';x.onclick=()=>box.remove();box.appendChild(x);return;}
 const data={v:3,kind:'hara',bv:C.bv,at:Date.now(),host:location.host,filter:filt,team:C.team,missTabs:miss,periods:periods,tables:periods.length?periods[periods.length-1].tables:[]};
@@ -1140,13 +1147,17 @@ box.appendChild(btn);box.appendChild(x);
 })();"""
 
 
+HARA_SOURCES = ["Tất cả", "Nguồn công ty", "Sale tự tìm"]
+
+
 def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     from urllib.parse import quote
 
     cfg = {"url": target_url, "team": str(secret("haracrm", "team", "S2.4")),
            "tabs": list(secret("haracrm", "tabs", ["Điều hành", "Năng lực NV"])),
            "names": list(roster["sale"]), "wait": int(secret("haracrm", "wait_ms", 15000)), "bv": HARA_VERSION,
-           "months": int(secret("haracrm", "months", 2))}
+           "months": int(secret("haracrm", "months", 2)),
+           "sources": list(secret("haracrm", "sources", HARA_SOURCES))}
     js = "".join(HARA_SRC.splitlines()).replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
@@ -2248,7 +2259,7 @@ HARA_CSS = """<style>
 .ht{border-collapse:collapse;width:100%;font-size:13.5px;font-family:inherit}
 .ht th,.ht td{padding:6px 7px;border-bottom:1px solid rgba(128,128,128,.2);vertical-align:middle}
 .ht th{font-weight:700;text-align:right;background:rgba(128,128,128,.06);line-height:1.25;min-width:52px}
-.ht th.l,.ht td.l{text-align:left} .ht td{text-align:right;white-space:nowrap} .ht td.l{white-space:normal;min-width:100px}
+.ht th.l,.ht td.l{text-align:left} .ht td{text-align:right;white-space:nowrap} .ht td.l{white-space:normal;min-width:125px}
 .ht th .s{display:block;font-weight:400;font-size:11.5px;color:rgba(110,110,110,.95)}
 .ht th.stg{background:rgba(59,130,246,.10)} .ht th.rt{background:rgba(250,204,21,.16)}
 .ht th.win{background:rgba(255,193,7,.30)} .ht td.win{background:rgba(255,193,7,.16);font-weight:700}
@@ -2330,7 +2341,14 @@ def page_hara():
     st.caption(f"Kỳ: **{filt_ or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
         st.warning(f"Lần cập nhật này không lấy được {pick}: {per['err']}.")
-    h = {"tables": per.get("tables", [])}
+    if per.get("srcErr"):
+        st.warning(f"HaraCRM: {per['srcErr']}")
+    ptabs = per.get("tables", [])
+    srcs_ = [x for x in dict.fromkeys(t_.get("src") or "Tất cả" for t_ in ptabs)]
+    if len(srcs_) > 1:
+        src_pick = st.segmented_control("Nguồn (HaraCRM)", srcs_, default=srcs_[0], key="hara_src") or srcs_[0]
+        ptabs = [t_ for t_ in ptabs if (t_.get("src") or "Tất cả") == src_pick]
+    h = {"tables": ptabs}
     want = [_plain(x) for x in secret("haracrm", "tables", ["Xếp hạng funnel", "NV trong phạm vi lọc"])]
     shown = [t for t in h.get("tables", []) if not want or any(w in _plain(t.get("title", "")) for w in want)]
     shown.sort(key=lambda t: next((i for i, w in enumerate(want) if w in _plain(t.get("title", ""))), 99))
