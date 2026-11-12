@@ -1153,7 +1153,7 @@ box.appendChild(btn);box.appendChild(x);
 
 HARA_SOURCES = ["Tất cả", "Nguồn công ty", "Sale tự tìm"]
 VC_SNAP = "sales-dashboard-voicecloud.json"
-VC_VERSION = 2
+VC_VERSION = 3
 VC_EXT_DEFAULT = {"1226": "Hiếu", "1021": "Toàn", "1177": "Nhi", "1008": "Châu"}   # máy lẻ VoiceCloud → Sale
 VC_SRC = r"""(async()=>{
 const C=__CFG__;
@@ -1178,7 +1178,44 @@ const firstRow=()=>{const t=tableOf(document);const r=t&&t.querySelector('tbody 
 const waitChange=async(before,ms)=>{for(let i=0;i<ms/400;i++){await sleep(400);if(firstRow()!==before)return true;}return false;};
 const btns=()=>[...document.querySelectorAll('button,a,input[type=submit],input[type=button]')].filter(vis);
 const searchBtn=()=>{const all=btns();const ex=all.find(b=>norm(T(b)||b.value)==='export');return all.find(b=>b.querySelector('.fa-search,.ti-search,.bi-search,[class*=search]'))||(ex&&ex.previousElementSibling&&vis(ex.previousElementSibling)?ex.previousElementSibling:null)||all.find(b=>/search|tim/.test(norm(T(b)||b.value)))||document.querySelector('form button[type=submit]');};
-let d=dts();let doc=document,live=true;const diag=[];
+let stop=false;const stopB=document.createElement('button');stopB.innerText='⏹ Dừng & gửi phần đã đọc';stopB.style.cssText='margin-top:10px;padding:6px 12px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';stopB.onclick=()=>{stop=true;};
+const prog=t=>{say(t);box.appendChild(stopB);};
+let d=dts();let doc=document,live=true;const diag=[];let from=fmt(f0,'00:00'),to=fmt(now,'23:59');
+const ext=C.ext||{};const calls={},other={};const seen=new Set();let total=0,pages=0,firstDay='',lastDay='';
+const rowsIn=dc=>{const t=tableOf(dc);return t?[...t.querySelectorAll('tbody tr')].filter(r=>/\d{4}-\d{2}-\d{2}/.test(T(r).replace(/\s+/g,''))).length:0;};
+const read=doc=>{const t=tableOf(doc);if(!t)return 0;const hs=[...(t.querySelector('thead tr:last-child')||t.rows[0]).children].map(c=>norm(T(c)));const ix=k=>hs.findIndex(h=>h===k||h.indexOf(k)>=0);
+const iD=ix('calldate'),iE=ix('caller id'),iDst=ix('destination'),iDur=ix('duration'),iTalk=ix('time calling'),iSt=ix('status');let n=0;
+for(const r of t.querySelectorAll('tbody tr')){const c=[...r.children].map(T);if(c.length<4)continue;const day=(String(c[iD]||'').replace(/\s+/g,'').match(/\d{4}-\d{2}-\d{2}/)||[])[0];if(!day)continue;
+const key=c.slice(0,Math.min(c.length,10)).join('|');if(seen.has(key))continue;seen.add(key);n++;total++;
+const e=String(c[iE]||'').trim();const talk=parseFloat(c[iTalk])||0;const ok=/answer/i.test(c[iSt]||'')?1:0;
+if(!firstDay||day<firstDay)firstDay=day;if(!lastDay||day>lastDay)lastDay=day;
+const s=ext[e];if(!s){other[e]=(other[e]||0)+1;continue;}const m=calls[s]||(calls[s]={});const v=m[day]||(m[day]=[0,0,0]);v[0]++;v[1]+=ok;v[2]+=talk;}return n;};
+const fdt=x=>x.getFullYear()+'-'+pad(x.getMonth()+1)+'-'+pad(x.getDate())+' '+pad(x.getHours())+':'+pad(x.getMinutes());
+const form0=d.length>=2&&d[0].closest('form');
+if(form0&&d[0].name&&d[1].name&&!C.noSplit){
+  const meth=(form0.getAttribute('method')||'GET').toUpperCase();const act=new URL(form0.getAttribute('action')||location.href,location.href);
+  const exSel=[...form0.querySelectorAll('select')].find(s_=>[...s_.options].some(o=>Object.keys(ext).some(e=>o.value===e||new RegExp('(^|\\D)'+e+'(\\D|$)').test(T(o)))));
+  const exVal=e=>{if(!exSel)return null;const o=[...exSel.options].find(o=>o.value===e)||[...exSel.options].find(o=>new RegExp('(^|\\D)'+e+'(\\D|$)').test(T(o)));return o?o.value:null;};
+  const sb=searchBtn();let nReq=0;
+  const q=async(a,b,ev)=>{const fd=new FormData(form0);fd.set(d[0].name,fdt(a));fd.set(d[1].name,fdt(b));if(exSel&&ev!=null)fd.set(exSel.name,ev);if(sb&&sb.name)fd.set(sb.name,sb.value||'');const opt={credentials:'include'};const u=new URL(act);
+    if(meth==='GET'){for(const [k,v] of fd.entries())u.searchParams.set(k,v);}else{opt.method='POST';opt.body=new URLSearchParams([...fd.entries()]);}
+    nReq++;return new DOMParser().parseFromString(await (await fetch(u,opt)).text(),'text/html');};
+  const end=new Date(now.getFullYear(),now.getMonth(),now.getDate(),23,59);
+  say('Đang kiểm tra số dòng mỗi trang…');const d0=await q(f0,end,null);const PAGE=rowsIn(d0);diag.push('mỗi lần tải '+PAGE+' dòng');
+  if(PAGE>0){
+    const targets=exSel?Object.keys(ext).map(e=>[e,exVal(e)]).filter(x=>x[1]!=null):[[null,null]];
+    diag.push(exSel?('lọc theo máy lẻ: '+targets.map(x=>x[0]).join(', ')):'không có ô lọc máy lẻ');
+    const jobs=[];for(const [e,ev] of targets){for(let x=new Date(f0);x<end;x=new Date(x.getFullYear(),x.getMonth(),x.getDate()+1)){const y=new Date(x.getFullYear(),x.getMonth(),x.getDate()+1);jobs.push([new Date(x),y>end?end:y,ev,e]);}}
+    let done=0;const totalJobs=jobs.length;
+    const work=async()=>{while(jobs.length&&!stop){const [a,b,ev,e]=jobs.shift();const dc=await q(a,b,ev);const n=rowsIn(dc);
+      if(n>=PAGE&&PAGE>0&&(b-a)>4*60000){const mid=new Date(a.getTime()+Math.floor((b-a)/120000)*60000);jobs.push([a,mid,ev,e],[mid,b,ev,e]);continue;}
+      if(n>=PAGE&&PAGE>0)diag.push('⚠️ quá nhiều cuộc trong 4 phút ('+fdt(a)+')');
+      read(dc);done++;pages++;prog('Đang đọc '+(e?'máy lẻ '+e+' · ':'')+'đến ngày '+fdt(a).slice(0,10)+' · '+total+' cuộc gọi… ('+nReq+' lần tải)');}};
+    await Promise.all([work(),work(),work(),work()]);
+    live=false;doc=null;diag.push(nReq+' lần tải');
+  }
+}
+if(doc===null){}else{
 diag.push('ô ngày: '+d.length+' · bảng cuộc gọi: '+(tableOf(document)?'có':'không')+' · form: '+(d[0]&&d[0].closest('form')?((d[0].closest('form').getAttribute('method')||'GET').toUpperCase()):'không'));
 if(d.length>=2&&d[0].value.trim().slice(0,10)>fmt(f0,'').trim()){
   say('Đang đặt khoảng ngày '+fmt(f0,'00:00')+' → hôm nay…');
@@ -1191,25 +1228,15 @@ if(d.length>=2&&d[0].value.trim().slice(0,10)>fmt(f0,'').trim()){
   if(!got){sessionStorage.setItem('vcAgain','1');const before=firstRow();const sb=searchBtn();if(!sb)throw new Error('Không thấy nút tìm (🔍) trên trang.');say('Đã đặt ngày, đang bấm 🔍…\n⚠️ Nếu trang tải lại và khung này biến mất: bấm nút 📞 thêm 1 lần nữa.');sb.click();
     const ch=await waitChange(before,20000);diag.push('bấm 🔍: '+(ch?'bảng đổi':'bảng không đổi'));await sleep(800);}
 }
-d=dts();const from=live?((d[0]&&d[0].value.trim())||''):fmt(f0,'00:00'),to=live?((d[1]&&d[1].value.trim())||''):fmt(now,'23:59');
+d=dts();if(live){from=(d[0]&&d[0].value.trim())||from;to=(d[1]&&d[1].value.trim())||to;}
 if(live)try{for(const s of [...document.querySelectorAll('select')].filter(vis)){const ops=[...s.options].map(o=>o.value);if(ops.length>=2&&ops.every(v=>/^-?\d+$/.test(v))&&ops.some(v=>+v>=25)){const mx=ops.includes('-1')?'-1':ops.reduce((a,b)=>+b>+a?b:a);if(s.value!==mx){const b=firstRow();s.value=mx;s.dispatchEvent(new Event('change',{bubbles:true}));try{if(window.jQuery)jQuery(s).trigger('change');}catch(e){}await waitChange(b,15000);await sleep(600);}}}}catch(e){}
-const ext=C.ext||{};const calls={},other={};const seen=new Set();let total=0,pages=0,firstDay='',lastDay='';
-const read=doc=>{const t=tableOf(doc);if(!t)return 0;const hs=[...(t.querySelector('thead tr:last-child')||t.rows[0]).children].map(c=>norm(T(c)));const ix=k=>hs.findIndex(h=>h===k||h.indexOf(k)>=0);
-const iD=ix('calldate'),iE=ix('caller id'),iDst=ix('destination'),iDur=ix('duration'),iTalk=ix('time calling'),iSt=ix('status');let n=0;
-for(const r of t.querySelectorAll('tbody tr')){const c=[...r.children].map(T);if(c.length<4)continue;const day=(String(c[iD]||'').replace(/\s+/g,'').match(/\d{4}-\d{2}-\d{2}/)||[])[0];if(!day)continue;
-const key=c.slice(0,Math.min(c.length,10)).join('|');if(seen.has(key))continue;seen.add(key);n++;total++;
-const e=String(c[iE]||'').trim();const talk=parseFloat(c[iTalk])||0;const ok=/answer/i.test(c[iSt]||'')?1:0;
-if(!firstDay||day<firstDay)firstDay=day;if(!lastDay||day>lastDay)lastDay=day;
-const s=ext[e];if(!s){other[e]=(other[e]||0)+1;continue;}const m=calls[s]||(calls[s]={});const v=m[day]||(m[day]=[0,0,0]);v[0]++;v[1]+=ok;v[2]+=talk;}return n;};
 const nextOf=doc=>{const c=[...doc.querySelectorAll('a,button,li')].filter(e=>{const tx=T(e);const lab=norm(e.getAttribute('aria-label')||e.getAttribute('title')||'');return (['»','›','>','→','Next','Sau','Tiếp','next'].includes(tx)||lab==='next'||lab.indexOf('next')===0)&&e.children.length<=2;});
 for(const e of c){const a=e.tagName==='LI'?e.querySelector('a,button'):e;if(!a)continue;const li=a.closest('li');const dis=(a.className+' '+(li?li.className:'')).indexOf('disabled')>=0||a.disabled||a.getAttribute('aria-disabled')==='true';if(!dis)return a;}return null;};
-let stop=false;const stopB=document.createElement('button');stopB.innerText='⏹ Dừng & gửi phần đã đọc';stopB.style.cssText='margin-top:10px;padding:6px 12px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';stopB.onclick=()=>{stop=true;};
-const prog=t=>{say(t);box.appendChild(stopB);};
 for(let guard=0;guard<2000&&!stop;guard++){pages++;const n=read(doc);prog('Đang đọc trang '+pages+' · '+total+' cuộc gọi…');const nx=nextOf(doc);if(!nx){diag.push('hết trang ở trang '+pages);break;}
 const href=nx.getAttribute&&nx.getAttribute('href');
 if(href&&href!=='#'&&!/^javascript/i.test(href)){const u=new URL(href,location.href);const h=await (await fetch(u,{credentials:'include'})).text();doc=new DOMParser().parseFromString(h,'text/html');live=false;if(!tableOf(doc))break;}
 else{if(!live)break;const b=firstRow();nx.click();if(!(await waitChange(b,15000)))break;await sleep(300);}
-if(n===0&&pages>3)break;}
+if(n===0&&pages>3)break;}}
 sessionStorage.removeItem('vcAgain');
 if(!total){say('❌ Không đọc được cuộc gọi nào. Mở trang Report → Outgoings, bấm 🔍 để hiện danh sách rồi bấm nút lần nữa.\nChẩn đoán: '+diag.join(' · ')+'\nChụp khung này gửi lại để chỉnh nút.');box.appendChild(closeBtn());return;}
 const data={v:1,kind:'vc',bv:C.bv,at:Date.now(),host:location.host,from:from||firstDay,to:to||lastDay,firstDay:firstDay,lastDay:lastDay,rows:total,pages:pages,calls:calls,sales:[...new Set(Object.values(ext))],other:other};
