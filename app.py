@@ -611,8 +611,11 @@ const pickU=n=>Object.keys(lf).find(k=>k.toLowerCase()===String(n).toLowerCase()
 let rfs=[];const rMissing=[];
 if(C.reason&&[].concat(C.reason).filter(Boolean).length){for(const n of [].concat(C.reason).filter(Boolean)){const k=pickU(n);if(k){rfs.push(k);}else{rMissing.push(n);}}}
 else{rfs=cands.filter(k=>score(k)>=2).sort((a,b)=>score(b)-score(a)).slice(0,3);}
+const nfs=[],nMissing=[];for(const n of [].concat(C.need||[]).filter(Boolean)){let k=pickU(n);if(!k){const z=norm(n);k=Object.keys(lf).find(q=>q.indexOf('UF_CRM')===0&&z&&norm(lab(q)).indexOf(z)>=0)||'';}if(k){if(!nfs.includes(k)&&!rfs.includes(k))nfs.push(k);}else{nMissing.push(n);}}
+const nRe=new RegExp(C.needRe||'quan tâm\\s*:?\\s*([^.\\n;]+)','i');
+const needOf=t=>{t=String(t||'').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,' ').replace(/[ \t]+/g,' ').trim();if(!t)return '';const m=t.match(nRe);if(!m)return '(Khác / không theo mẫu)';const r=m[1].trim().slice(0,80);return r?r.charAt(0).toUpperCase()+r.slice(1):'';};
 const rmaps={};
-for(const k of rfs){const q=lf[k];const mp={};for(const it of (q.items||[])){mp[String(it.ID)]=String(it.VALUE).trim();}
+for(const k of rfs.concat(nfs)){const q=lf[k];const mp={};for(const it of (q.items||[])){mp[String(it.ID)]=String(it.VALUE).trim();}
 if(q.type==='crm_status'&&q.statusType){const r=(await call('crm.status.list',{filter:{ENTITY_ID:q.statusType}}).catch(()=>({}))).result||[];for(const it of r){mp[String(it.STATUS_ID)]=String(it.NAME).trim();}}rmaps[k]=mp;}
 const dateF=Object.keys(df_).filter(k=>k.indexOf('UF_CRM')===0&&['date','datetime'].includes(df_[k].type));
 let rdf='';
@@ -648,8 +651,8 @@ const W=rdf?[]:await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTI
 if(!rdf){W.forEach(x=>{const day=String(x.CLOSEDATE).slice(0,10);add(name,day,2,1);add(name,day,3,parseFloat(x.OPPORTUNITY)||0);wl(x,day);});}
 if(rdf){const RV=await all('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'S',['>='+rdf]:from},select:['ID','OPPORTUNITY',rdf,'TITLE','SOURCE_ID'].concat(pkf?[pkf]:[]),order:{ID:'ASC'}},'doanh thu của '+name);RV.forEach(x=>{const d=String(x[rdf]||'').slice(0,10);if(d){add(name,d,2,1);add(name,d,3,parseFloat(x.OPPORTUNITY)||0);wl(x,d);}});}
 stages[name]={};const m={};
-if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rfs)},'lead theo stage của '+name);}catch(e){if(!rfs.length)throw e;warn.push('Không đọc được trường lý do Unqualified: '+e.message);rfs=[];LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
-for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rfs.length&&closedIds.includes(x.STATUS_ID)){rs=rfs.map(k=>{const v=x[k];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>rmaps[k][String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';});}const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
+if(want.length){let LS;try{LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE'].concat(rfs).concat(nfs)},'lead theo stage của '+name);}catch(e){if(!rfs.length&&!nfs.length)throw e;warn.push('Không đọc được trường lý do Unqualified / nhu cầu: '+e.message);rfs=[];nfs.length=0;LS=await fast('crm.lead.list',{filter:{ASSIGNED_BY_ID:u,STATUS_ID:want,'>=DATE_CREATE':mFrom+'T00:00:00+07:00'},select:['ID','STATUS_ID','SOURCE_ID','DATE_CREATE']},'lead theo stage của '+name);}
+for(const x of LS){const sn=stName[x.STATUS_ID]||String(x.STATUS_ID);const so=x.SOURCE_ID?(srcName[x.SOURCE_ID]||String(x.SOURCE_ID)):'(Không có nguồn)';let rs='';if(rfs.length&&closedIds.includes(x.STATUS_ID)){rs=rfs.map(k=>{const v=x[k];const arr=(Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false);return arr.map(z=>rmaps[k][String(z)]||String(z)).join(', ')||'(Chưa ghi lý do)';});}const nd=[...new Set(nfs.flatMap(k=>{const v=x[k];return (Array.isArray(v)?v:[v]).filter(z=>z!==null&&z!==undefined&&z!==''&&z!==false).map(z=>needOf(rmaps[k][String(z)]||String(z)));}).filter(Boolean))].join(', ');const k=JSON.stringify([sn,so,String(x.DATE_CREATE).slice(0,10),rs,nd]);m[k]=(m[k]||0)+1;if(!excl.includes(x.SOURCE_ID)){stages[name][sn]=(stages[name][sn]||0)+1;}}}
 ldet[name]=Object.entries(m).map(([k,v])=>JSON.parse(k).concat([v]));
 try{const DO=await fast('crm.deal.list',{filter:{ASSIGNED_BY_ID:u,STAGE_SEMANTIC_ID:'P'},select:['ID','TITLE','STAGE_ID','CATEGORY_ID','DATE_CREATE','DATE_MODIFY','OPPORTUNITY'].concat(pkf?[pkf]:[])},'deal tồn của '+name);dopen[name]=DO.map(x=>[String(x.ID),String(x.TITLE||'').slice(0,120),String(x.STAGE_ID),String(x.CATEGORY_ID||'0'),String(x.DATE_CREATE||''),parseFloat(x.OPPORTUNITY)||0,pkOf(x),String(x.DATE_MODIFY||'')]);}catch(e){dopen[name]=[];warn.push('Deal tồn của '+name+': '+e.message);}
 if(C.calls!==false){calls[name]={};const ct=C.callTypes||[];const addc=(d,sec)=>{if(!d)return;const c=calls[name][d]||(calls[name][d]=[0,0]);c[0]++;c[1]+=sec;};
@@ -685,7 +688,7 @@ try{const d=await call('batch',{halt:0,cmd:cmd});const R=(d.result||{}).result||
 for(const id in dcm)dcm[id]=dcm[id].map(x=>[x[0],uname[x[1]]||(x[1]?'User '+x[1]:''),x[2]]);
 if(ids.length>lim.length)warn.push('Chỉ đọc comment của '+lim.length+'/'+ids.length+' deal (deal cập nhật gần nhất trước).');
 }catch(e){warn.push('Không đọc được comment trên deal: '+e.message);}}
-const data={v:15,dcm:dcm,dlostList:dlostList,dnew:dnew,dopen:dopen,dstages:dstages,dcats:dcats,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
+const data={v:15,dcm:dcm,dlostList:dlostList,dnew:dnew,dopen:dopen,dstages:dstages,dcats:dcats,calls:calls,callSrc:callSrc,dwon:dwon,pkgField:pkf?[pkf,dlab(pkf)]:null,bv:C.bv,warn:warn,ldet:ldet,ldetFrom:mFrom,reasonField:rfs.length?[rfs[0],lab(rfs[0])]:null,reasonFields:rfs.map(k=>[k,lab(k)]),needFields:nfs.map(k=>[k,lab(k)]),needMissing:nMissing,reasonMissing:rMissing,revField:rdf?[rdf,dlab(rdf)]:null,revCands:dateF.map(dlab).slice(0,40),reasonCands:cands.map(lab).slice(0,40),dlost:dlost,lostField:lrf?[lrf,dlab(lrf)]:null,lostCands:dcands.map(dlab).slice(0,40),users:found,unresolved:unresolved,exclSources:C.excl||[],missingSources:missingSrc,allSources:srcs.map(x=>x.NAME),at:Date.now(),from:from,portal:location.host,agg:agg,stages:stages,missing:missing,allStages:sts.map(x=>x.NAME)};
 const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
 const raw=new TextEncoder().encode(JSON.stringify(data));
 let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
@@ -851,7 +854,7 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
     cfg = {x.strip().lower(): x for x in lead_stage_config()[0]}  # khớp tên stage không phân biệt hoa thường
     detail = pd.DataFrame(
         [{"sale": key2sale(u), "stage": cfg.get(str(r[0]).strip().lower(), r[0]), "source": r[1], "created": r[2],
-          "reason": r[3] if len(r) >= 5 else "", "n": int(r[-1])}
+          "reason": r[3] if len(r) >= 5 else "", "n": int(r[-1]), "need": r[4] if len(r) >= 6 else ""}
          for u, rows in (snap.get("ldet") or {}).items() if key2sale(u) for r in rows],
         columns=LEAD_DETAIL_COLS)
     portal = snap.get("portal") or ""
@@ -888,7 +891,8 @@ def snapshot_frames(snap: dict, id2sale: dict, d_start: date, d_end: date) -> di
             **({"calls": pd.DataFrame(call_rows, columns=["ts", "sale", "duration"])} if "calls" in snap else {})}
 
 
-LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n"]
+LEAD_DETAIL_COLS = ["sale", "stage", "source", "created", "reason", "n", "need"]
+NEED_FIELDS_DEFAULT = ["Nội dung tư vấn"]
 DEAL_LOST_COLS = ["sale", "source", "closed", "reason", "n"]
 WON_LIST_COLS = ["sale", "id", "title", "amount", "source", "day", "link", "package"]
 DEAL_OPEN_COLS = ["sale", "stage_id", "stage", "cat", "order", "created", "n", "amount", "id", "title", "created_ts", "link",
@@ -1162,7 +1166,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
-BOOKMARKLET_VERSION = 21  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
+BOOKMARKLET_VERSION = 22  # tăng mỗi khi đổi nút → dashboard nhắc cài lại nút
 
 
 def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1173,6 +1177,8 @@ def bookmarklet_href(target_url: str, roster: pd.DataFrame) -> str:
            "users": [[r.bitrix_id, r.sale, r.email] for r in roster.itertuples()],
            "excl": lead_exclude_sources(), "closed": lead_stage_config()[1],
            "reason": _cfg_list(secret("bitrix24", "unqual_reason_field", "")),
+           "need": _cfg_list(secret("bitrix24", "need_field", NEED_FIELDS_DEFAULT)),
+           "needRe": str(secret("bitrix24", "need_regex", "") or ""),
            "revDate": str(secret("bitrix24", "revenue_date_field", "Ngày ghi nhận doanh số") or "Ngày ghi nhận doanh số"),
            "lostReason": str(secret("bitrix24", "lost_reason_field", "") or ""), "bv": BOOKMARKLET_VERSION,
            "comments": bool(secret("bitrix24", "read_comments", True)), "cmExcl": comment_exclude(),
@@ -1581,10 +1587,12 @@ def _demo_lead_detail(today: date) -> pd.DataFrame:
                              "created": today - timedelta(days=int(r.integers(0, 120))),
                              "reason": (["A5. Invalid Phone", "A6. Không đăng ký", "A2. Sinh viên Test",
                                          "F4. Khách trả lời không có nhu cầu", "B8.2. Không nghe máy"][int(r.integers(0, 5))]
-                                        if st_ == "Unqualified" else ""), "n": 1})
+                                        if st_ == "Unqualified" else ""), "n": 1,
+                             "need": ["Tối ưu lại website đang có", "Làm website mới", "Chatbot tự động CSKH", "(Khác / không theo mẫu)",
+                                      "Bán hàng đa kênh"][int(r.integers(0, 5))]})
     df = pd.DataFrame(rows, columns=LEAD_DETAIL_COLS)
     df = df[df["created"] >= _prev_month_start(today)]
-    return df.groupby(["sale", "stage", "source", "created", "reason"], as_index=False)["n"].sum()
+    return df.groupby(["sale", "stage", "source", "created", "reason", "need"], as_index=False)["n"].sum()
 
 
 def _demo_deal_lost(today: date) -> pd.DataFrame:
@@ -2410,6 +2418,7 @@ def page_leads():
         stage_view_full = stage_view_full.reset_index().rename(columns={"sale": "Sale", "index": "Sale"})
         _render_lead_table(stage_view_full, selected_sale_lead)
         _render_unqual_reasons(f, selected_sale_lead, _snap)
+        _render_unqual_by_need(f, selected_sale_lead, _snap)
         lost = data.get("deal_lost", pd.DataFrame(columns=DEAL_LOST_COLS))
         if picked_src:
             lost = lost[lost["source"].astype(str).isin(picked_src)]
@@ -2567,6 +2576,63 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
         else:
             _show_reason_table(_reason_table(u, "Unqual"), "Unqual", "Tổng lead Unqualified",
                                f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)")
+
+
+def _render_unqual_by_need(f: pd.DataFrame, selected_sale: str, snap_: dict | None):
+    """Lead Unqualified chia theo nhu cầu ban đầu (trường trên lead Bitrix), kèm lý do Unqualified."""
+    st.subheader("🎯 Lead | Unqualified theo Nhu cầu ban đầu")
+    if snap_ is not None and "needFields" not in snap_:
+        st.info("Cần cài lại nút **📥 Cập nhật Bitrix** (phiên bản mới) rồi bấm trên Bitrix24 để đọc trường nhu cầu ban đầu.")
+        return
+    nf = (snap_ or {}).get("needFields") or ([["", "Nhu cầu ban đầu"]] if snap_ is None else [])
+    if snap_ is not None and snap_.get("needMissing"):
+        st.warning(f"Không thấy trường {', '.join(snap_['needMissing'])} trên lead Bitrix24 — sửa `need_field` trong "
+                   "Secrets (mục `[bitrix24]`) rồi cài lại nút.")
+    if not nf:
+        return
+    st.caption(f"Nhu cầu ban đầu lấy từ trường **{' / '.join(x[1] for x in nf)}** trên lead (phần sau chữ "
+               "«Đang quan tâm …», đến dấu chấm). Lead ở stage "
+               f"{', '.join(closed_stages)}; cùng bộ lọc Sale / Source / Ngày tạo ở trên.")
+    u = f[f["stage"].astype(str).str.lower().isin([c.lower() for c in closed_stages])].copy()
+    if selected_sale != "Tất cả":
+        u = u[u["sale"] == selected_sale]
+    if u.empty:
+        st.caption("Không có lead Unqualified nào với bộ lọc hiện tại.")
+        return
+    u["need"] = u["need"].fillna("").astype(str).str.strip().replace("", "(Chưa ghi nhu cầu)")
+    pv = u.pivot_table(index="need", columns="sale", values="n", aggfunc="sum", fill_value=0)
+    pv = pv[[s_ for s_ in lb["sale"] if s_ in pv.columns]]
+    pv.insert(0, "Unqual", pv.sum(axis=1))
+    pv = pv.sort_values("Unqual", ascending=False)
+    pv.insert(1, "% Unqual", pv["Unqual"] / pv["Unqual"].sum())
+    pv = pv.reset_index().rename(columns={"need": "Nhu cầu ban đầu"})
+    pv.columns.name = None
+    tot = pv.drop(columns=["Nhu cầu ban đầu"]).sum().to_frame().T
+    tot.insert(0, "Nhu cầu ban đầu", "TỔNG")
+    pv = pd.concat([pv, tot], ignore_index=True)
+    ints = [c for c in pv.columns if c not in ("Nhu cầu ban đầu", "% Unqual")]
+    pv[ints] = pv[ints].astype(int)
+    sty = (pv.style.hide(axis="index")
+           .format({"% Unqual": "{:.0%}"})
+           .set_properties(subset=["Unqual"], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
+           .apply(lambda r: ["font-weight:700" if r["Nhu cầu ban đầu"] == "TỔNG" else ""] * len(r), axis=1))
+    st.dataframe(sty, hide_index=True, width="stretch",
+                 column_config={"Nhu cầu ban đầu": st.column_config.TextColumn(pinned=True, width="medium")})
+    st.download_button("⬇️ Tải bảng Unqualified theo nhu cầu (CSV)", pv.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"unqualified_theo_nhu_cau_{now:%Y%m%d}.csv", mime="text/csv", key="need_dl")
+
+    needs = [x for x in pv["Nhu cầu ban đầu"] if x != "TỔNG"]
+    dflt = next((x for x in needs if "toi uu" in _plain(x)), needs[0])
+    pick = st.selectbox("🔎 Xem lý do Unqualified của nhóm nhu cầu", needs, index=needs.index(dflt), key="need_pick")
+    fields = (snap_ or {}).get("reasonFields") or ([["", "Unqualified reason"]] if snap_ is None else [])
+    idx = next((i for i, x in enumerate(fields) if "reason" in _plain(x[1])), 0)
+    sub = u[u["need"] == pick].copy()
+    sub["reason"] = sub["reason"].map(lambda v: (v[idx] if isinstance(v, (list, tuple)) and len(v) > idx
+                                                 else (v if idx == 0 and isinstance(v, str) else "")))
+    st.markdown(f"**🚫 Unqualified reason — nhóm «{pick}»** · {int(sub['n'].sum())} lead")
+    safe = re.sub(r"\W+", "_", _norm_txt(pick)) or "nhu_cau"
+    _show_reason_table(_reason_table(sub, "Unqual"), "Unqual", "Tổng lead Unqualified",
+                       f"unqualified_{safe}_{now:%Y%m%d}.csv", "⬇️ Tải bảng lý do của nhóm này (CSV)")
 
 
 def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
