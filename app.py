@@ -1585,14 +1585,19 @@ def _demo_lead_detail(today: date) -> pd.DataFrame:
             for _ in range(int(n_)):
                 rows.append({"sale": s_, "stage": st_, "source": srcs[int(r.choice(6, p=[.3, .25, .15, .12, .1, .08]))],
                              "created": today - timedelta(days=int(r.integers(0, 120))),
-                             "reason": (["A5. Invalid Phone", "A6. Không đăng ký", "A2. Sinh viên Test",
-                                         "F4. Khách trả lời không có nhu cầu", "B8.2. Không nghe máy"][int(r.integers(0, 5))]
+                             "reason": ([["A5. Invalid Phone", "A6. Không đăng ký", "A2. Sinh viên Test",
+                                          "F4. Khách trả lời không có nhu cầu", "B8.2. Không nghe máy"][int(r.integers(0, 5))],
+                                         ["Khách chỉ hỏi giá, chưa có ngân sách", "Đã dùng nền tảng khác",
+                                          "Gọi 3 lần không bắt máy", ""][int(r.integers(0, 4))]]
                                         if st_ == "Unqualified" else ""), "n": 1,
                              "need": ["Tối ưu lại website đang có", "Làm website mới", "Chatbot tự động CSKH", "(Khác / không theo mẫu)",
                                       "Bán hàng đa kênh"][int(r.integers(0, 5))]})
     df = pd.DataFrame(rows, columns=LEAD_DETAIL_COLS)
     df = df[df["created"] >= _prev_month_start(today)]
-    return df.groupby(["sale", "stage", "source", "created", "reason", "need"], as_index=False)["n"].sum()
+    df["reason"] = df["reason"].map(lambda v: tuple(v) if isinstance(v, list) else v)
+    out_ = df.groupby(["sale", "stage", "source", "created", "reason", "need"], as_index=False)["n"].sum()
+    out_["reason"] = out_["reason"].map(lambda v: list(v) if isinstance(v, tuple) else v)
+    return out_
 
 
 def _demo_deal_lost(today: date) -> pd.DataFrame:
@@ -2418,7 +2423,6 @@ def page_leads():
         stage_view_full = stage_view_full.reset_index().rename(columns={"sale": "Sale", "index": "Sale"})
         _render_lead_table(stage_view_full, selected_sale_lead)
         _render_unqual_reasons(f, selected_sale_lead, _snap)
-        _render_unqual_by_need(f, selected_sale_lead, _snap)
         lost = data.get("deal_lost", pd.DataFrame(columns=DEAL_LOST_COLS))
         if picked_src:
             lost = lost[lost["source"].astype(str).isin(picked_src)]
@@ -2469,9 +2473,11 @@ def _reason_table(u: pd.DataFrame, total_col: str) -> pd.DataFrame:
     return pv
 
 
-def _show_reason_table(pv: pd.DataFrame, total_col: str, help_: str, fname: str, label: str):
-    num = [c for c in pv.columns if c != "Sale"]
-    disp = pv.assign(Sale=pv["Sale"].astype(str).str.replace(" ", "\u00a0"))  # giữ tên Sale trên 1 dòng
+def _show_reason_table(pv: pd.DataFrame, total_col: str, help_: str, fname: str, label: str, first: str = "Sale",
+                       pct: str | None = None):
+    pv = pv.rename(columns={"Sale": first}) if first != "Sale" else pv
+    num = [c for c in pv.columns if c not in (first, pct)]
+    disp = pv.assign(**{first: pv[first].astype(str).str.replace(" ", "\u00a0")}) if first == "Sale" else pv.copy()
     styled = (disp.style
               .hide(axis="index")
               .set_properties(subset=[total_col], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
@@ -2480,8 +2486,13 @@ def _show_reason_table(pv: pd.DataFrame, total_col: str, help_: str, fname: str,
                                                                ("vertical-align", "bottom"), ("min-width", "70px")]},
                                  {"selector": "td", "props": [("white-space", "normal")]},
                                  {"selector": "td.col0", "props": [("white-space", "nowrap")]}])
-              .apply(lambda r: ["font-weight: bold" if r["Sale"] == "TỔNG" else "" for _ in r], axis=1)
+              .apply(lambda r: ["font-weight: bold" if r[first] == "TỔNG" else "" for _ in r], axis=1)
               .format(lambda v: f"{v:,}" if v else "", subset=num))
+    if pct:
+        styled = styled.format("{:.0%}", subset=[pct]).set_properties(subset=[pct], **{"text-align": "right"})
+    if first != "Sale":
+        styled = styled.set_table_styles([{"selector": "td.col0", "props": [("white-space", "normal"),
+                                                                            ("min-width", "180px")]}], overwrite=False)
     st.table(styled)  # bảng thường: tiêu đề dài tự xuống hàng thay vì bị cắt
     st.download_button(label, pv.to_csv(index=False).encode("utf-8-sig"), file_name=fname, mime="text/csv")
 
@@ -2493,16 +2504,33 @@ def _old_button_msg(snap_: dict):
                "mở Bitrix24, bấm nút mới → **📤 Gửi sang dashboard**.")
 
 
-def _show_reason_list(u: pd.DataFrame, fname: str, label: str):
-    """Lý do nhập tay: mỗi lý do 1 hàng, nhóm theo Sale (thay vì mỗi lý do 1 cột)."""
+def _show_reason_list(u: pd.DataFrame, fname: str, label: str, detail_label: str = "Lý do chi tiết"):
+    """Lý do nhập tay: mỗi lý do 1 hàng, nhóm theo Sale; kèm Nhu cầu ban đầu + Unqualified reason nếu có."""
     u = u.copy()
     u["reason"] = u["reason"].map(lambda v: " ".join(str(v).split())).replace("", "(Chưa ghi lý do)")
-    g = u.groupby(["sale", "reason"], as_index=False)["n"].sum()
+    has_need = "need" in u and u["need"].fillna("").astype(str).str.strip().ne("").any()
+    has_main = "main_reason" in u and u["main_reason"].fillna("").astype(str).str.strip().ne("").any()
+    keys = ["sale"]
+    if has_need:
+        u["need"] = u["need"].fillna("").astype(str).str.strip().replace("", "(Chưa ghi nhu cầu)")
+        needs = list(u.groupby("need")["n"].sum().sort_values(ascending=False).index)
+        pick = st.selectbox("🎯 Lọc theo Nhu cầu ban đầu", ["Tất cả"] + needs, key=f"rl_need_{fname}")
+        if pick != "Tất cả":
+            u = u[u["need"] == pick]
+        keys.append("need")
+    if has_main:
+        u["main_reason"] = u["main_reason"].fillna("").astype(str).replace("", "(Chưa ghi reason)")
+        keys.append("main_reason")
+    keys.append("reason")
+    g = u.groupby(keys, as_index=False)["n"].sum()
     rank = {s_: i for i, s_ in enumerate(lb["sale"])}
     g["_s"] = g["sale"].map(rank).fillna(len(rank))
     g["_blank"] = g["reason"].eq("(Chưa ghi lý do)")
-    g = g.sort_values(["_s", "_blank", "n", "reason"], ascending=[True, True, False, True])
-    out = g.rename(columns={"sale": "Sale", "reason": "Lý do chi tiết", "n": "Số lead"})[["Sale", "Lý do chi tiết", "Số lead"]]
+    g = g.sort_values(["_s"] + keys[1:-1] + ["_blank", "n", "reason"],
+                      ascending=[True] + [True] * len(keys[1:-1]) + [True, False, True])
+    names = {"sale": "Sale", "need": "Nhu cầu ban đầu", "main_reason": "Unqualified reason",
+             "reason": detail_label, "n": "Số lead"}
+    out = g.rename(columns=names)[[names[k] for k in keys] + ["Số lead"]]
     tot = out.groupby("Sale", sort=False)["Số lead"].sum()
     st.caption("Tổng lead Unqualified: " + " · ".join(f"**{k}** {v}" for k, v in tot.items()))
     out = out.reset_index(drop=True)
@@ -2545,7 +2573,7 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
         _old_button_msg(snap_)
         return
     fields = (snap_.get("reasonFields") or ([snap_["reasonField"]] if snap_.get("reasonField") else [])
-              if snap_ is not None else [["", "Lý do Unqualified"]])
+              if snap_ is not None else [["", "Unqualified reason"], ["", "Chi tiết lý do Unqualified khách hàng"]])
     if snap_ is not None and snap_.get("reasonMissing"):
         st.warning(f"Không thấy trường {snap_['reasonMissing']} trên Bitrix24 — sửa `unqual_reason_field` trong Secrets.")
     if not fields:
@@ -2560,7 +2588,13 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
     if selected_sale != "Tất cả":
         u0 = u0[u0["sale"] == selected_sale]
     order = sorted(enumerate(fields), key=lambda t: (0 if "reason" in _plain(t[1][1]) else 1, t[0]))  # "Unqualified reason" lên trước
+    ridx = order[0][0]
+    need_done = False
     for idx, (code, label) in order:
+        is_detail = "chi tiet" in _plain(label) or "DETAIL" in str(code).upper()
+        if is_detail and not need_done:
+            _render_unqual_by_need(f, selected_sale, snap_)
+            need_done = True
         st.subheader(f"🚫 Lead | {label} theo Sale")
         st.caption(f"Lead đang ở stage {', '.join(closed_stages)}, lấy từ trường **{label}**"
                    f"{f' (`{code}`)' if code else ''}. Áp dụng cùng bộ lọc Sale / Source / Ngày tạo ở trên.")
@@ -2571,11 +2605,16 @@ def _render_unqual_reasons(f: pd.DataFrame, selected_sale: str, snap_: dict | No
         u["reason"] = u["reason"].map(lambda v: (v[idx] if isinstance(v, (list, tuple)) and len(v) > idx
                                                  else (v if idx == 0 and isinstance(v, str) else "")))
         safe = re.sub(r"\W+", "_", _norm_txt(label)) or f"truong_{idx + 1}"
-        if "chi tiet" in _plain(label) or "DETAIL" in str(code).upper():   # lý do sale tự nhập tay → liệt kê theo hàng
-            _show_reason_list(u, f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)")
+        if is_detail:   # lý do sale tự nhập tay → bảng kết hợp Nhu cầu + Unqualified reason + chi tiết
+            u["main_reason"] = u0["reason"].map(lambda v: (v[ridx] if isinstance(v, (list, tuple)) and len(v) > ridx
+                                                           else (v if isinstance(v, str) else "")))
+            _show_reason_list(u, f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)",
+                              detail_label=label)
         else:
             _show_reason_table(_reason_table(u, "Unqual"), "Unqual", "Tổng lead Unqualified",
                                f"unqualified_{safe}_{now:%Y%m%d}.csv", f"⬇️ Tải bảng {label} (CSV)")
+    if not need_done:
+        _render_unqual_by_need(f, selected_sale, snap_)
 
 
 def _render_unqual_by_need(f: pd.DataFrame, selected_sale: str, snap_: dict | None):
@@ -2605,34 +2644,16 @@ def _render_unqual_by_need(f: pd.DataFrame, selected_sale: str, snap_: dict | No
     pv.insert(0, "Unqual", pv.sum(axis=1))
     pv = pv.sort_values("Unqual", ascending=False)
     pv.insert(1, "% Unqual", pv["Unqual"] / pv["Unqual"].sum())
-    pv = pv.reset_index().rename(columns={"need": "Nhu cầu ban đầu"})
+    pv = pv.reset_index().rename(columns={"need": "Sale"})
     pv.columns.name = None
-    tot = pv.drop(columns=["Nhu cầu ban đầu"]).sum().to_frame().T
-    tot.insert(0, "Nhu cầu ban đầu", "TỔNG")
+    tot = pv.drop(columns=["Sale"]).sum().to_frame().T
+    tot.insert(0, "Sale", "TỔNG")
     pv = pd.concat([pv, tot], ignore_index=True)
-    ints = [c for c in pv.columns if c not in ("Nhu cầu ban đầu", "% Unqual")]
+    ints = [c for c in pv.columns if c not in ("Sale", "% Unqual")]
     pv[ints] = pv[ints].astype(int)
-    sty = (pv.style.hide(axis="index")
-           .format({"% Unqual": "{:.0%}"})
-           .set_properties(subset=["Unqual"], **{"background-color": "rgba(255, 193, 7, 0.22)", "font-weight": "bold"})
-           .apply(lambda r: ["font-weight:700" if r["Nhu cầu ban đầu"] == "TỔNG" else ""] * len(r), axis=1))
-    st.dataframe(sty, hide_index=True, width="stretch",
-                 column_config={"Nhu cầu ban đầu": st.column_config.TextColumn(pinned=True, width="medium")})
-    st.download_button("⬇️ Tải bảng Unqualified theo nhu cầu (CSV)", pv.to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f"unqualified_theo_nhu_cau_{now:%Y%m%d}.csv", mime="text/csv", key="need_dl")
-
-    needs = [x for x in pv["Nhu cầu ban đầu"] if x != "TỔNG"]
-    dflt = next((x for x in needs if "toi uu" in _plain(x)), needs[0])
-    pick = st.selectbox("🔎 Xem lý do Unqualified của nhóm nhu cầu", needs, index=needs.index(dflt), key="need_pick")
-    fields = (snap_ or {}).get("reasonFields") or ([["", "Unqualified reason"]] if snap_ is None else [])
-    idx = next((i for i, x in enumerate(fields) if "reason" in _plain(x[1])), 0)
-    sub = u[u["need"] == pick].copy()
-    sub["reason"] = sub["reason"].map(lambda v: (v[idx] if isinstance(v, (list, tuple)) and len(v) > idx
-                                                 else (v if idx == 0 and isinstance(v, str) else "")))
-    st.markdown(f"**🚫 Unqualified reason — nhóm «{pick}»** · {int(sub['n'].sum())} lead")
-    safe = re.sub(r"\W+", "_", _norm_txt(pick)) or "nhu_cau"
-    _show_reason_table(_reason_table(sub, "Unqual"), "Unqual", "Tổng lead Unqualified",
-                       f"unqualified_{safe}_{now:%Y%m%d}.csv", "⬇️ Tải bảng lý do của nhóm này (CSV)")
+    st.caption("Hàng = nhu cầu ban đầu, cột = từng Sale.")
+    _show_reason_table(pv, "Unqual", "Tổng lead Unqualified", f"unqualified_theo_nhu_cau_{now:%Y%m%d}.csv",
+                       "⬇️ Tải bảng Unqualified theo nhu cầu (CSV)", first="Nhu cầu ban đầu", pct="% Unqual")
 
 
 def _render_lead_table(stage_view_full: pd.DataFrame, selected_sale_lead: str):
