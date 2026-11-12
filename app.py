@@ -1152,6 +1152,97 @@ box.appendChild(btn);box.appendChild(x);
 
 
 HARA_SOURCES = ["Tất cả", "Nguồn công ty", "Sale tự tìm"]
+VC_SNAP = "sales-dashboard-voicecloud.json"
+VC_VERSION = 1
+VC_EXT_DEFAULT = {"1226": "Hiếu", "1021": "Toàn", "1177": "Nhi", "1008": "Châu"}   # máy lẻ VoiceCloud → Sale
+VC_SRC = r"""(async()=>{
+const C=__CFG__;
+const box=document.createElement('div');
+box.style.cssText='position:fixed;z-index:2147483647;top:16px;right:16px;width:380px;padding:16px;background:white;color:rgb(34,34,34);border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.25);font:14px/1.5 sans-serif;white-space:pre-line';
+document.body.appendChild(box);
+const say=t=>{box.innerText='📞 Cập nhật VoiceCloud → Dashboard\n'+t;};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const T=e=>String((e&&(e.innerText||e.textContent))||'').replace(/\s+/g,' ').trim();
+const vis=e=>!!(e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length));
+const norm=t=>String(t||'').toLowerCase().replace(/đ/g,'d').normalize('NFD').replace(/[̀-ͯ]/g,'').split(/[^a-z0-9]+/).filter(Boolean).join(' ');
+const closeBtn=()=>{const x=document.createElement('button');x.innerText='Đóng';x.style.cssText='margin:10px 0 0 10px;padding:8px 14px;background:white;border:1px solid rgb(200,200,200);border-radius:6px;cursor:pointer';x.onclick=()=>box.remove();return x;};
+try{
+const pad=n=>String(n).padStart(2,'0');const now=new Date();
+const f0=new Date(now.getFullYear(),now.getMonth()-((C.months||2)-1),1);
+const fmt=(d,hm)=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+hm;
+const isDT=v=>/^\d{4}-\d{2}-\d{2}/.test(String(v||'').trim());
+const dts=()=>[...document.querySelectorAll('input')].filter(i=>vis(i)&&isDT(i.value));
+const setV=(el,v)=>{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(el,v);for(const ev of ['input','change','blur'])el.dispatchEvent(new Event(ev,{bubbles:true}));try{if(window.jQuery){jQuery(el).val(v).trigger('change');}}catch(e){}};
+const tableOf=doc=>[...doc.querySelectorAll('table')].find(t=>{const h=norm(T(t.querySelector('thead')||t.rows[0]));return h.indexOf('caller id')>=0&&h.indexOf('calldate')>=0;});
+const firstRow=()=>{const t=tableOf(document);const r=t&&t.querySelector('tbody tr');return r?T(r):'';};
+const waitChange=async(before,ms)=>{for(let i=0;i<ms/400;i++){await sleep(400);if(firstRow()!==before)return true;}return false;};
+const btns=()=>[...document.querySelectorAll('button,a,input[type=submit],input[type=button]')].filter(vis);
+const searchBtn=()=>{const all=btns();const ex=all.find(b=>norm(T(b)||b.value)==='export');return all.find(b=>b.querySelector('.fa-search,.ti-search,.bi-search,[class*=search]'))||(ex&&ex.previousElementSibling&&vis(ex.previousElementSibling)?ex.previousElementSibling:null)||all.find(b=>/search|tim/.test(norm(T(b)||b.value)))||document.querySelector('form button[type=submit]');};
+let d=dts();
+if(d.length>=2&&d[0].value.trim().slice(0,10)>fmt(f0,'').trim()){
+  say('Đang đặt khoảng ngày '+fmt(f0,'00:00')+' → hôm nay rồi bấm tìm…\nNếu trang tải lại, hãy bấm nút 📞 lần nữa.');
+  setV(d[0],fmt(f0,'00:00'));setV(d[1],fmt(now,'23:59'));await sleep(400);
+  const before=firstRow();const sb=searchBtn();if(!sb)throw new Error('Không thấy nút tìm (🔍) trên trang.');sb.click();
+  await waitChange(before,20000);await sleep(800);
+}
+d=dts();const from=(d[0]&&d[0].value.trim())||'',to=(d[1]&&d[1].value.trim())||'';
+try{for(const s of [...document.querySelectorAll('select')].filter(vis)){const ops=[...s.options].map(o=>o.value);if(ops.length>=2&&ops.every(v=>/^-?\d+$/.test(v))&&ops.some(v=>+v>=25)){const mx=ops.includes('-1')?'-1':ops.reduce((a,b)=>+b>+a?b:a);if(s.value!==mx){const b=firstRow();s.value=mx;s.dispatchEvent(new Event('change',{bubbles:true}));try{if(window.jQuery)jQuery(s).trigger('change');}catch(e){}await waitChange(b,15000);await sleep(600);}}}}catch(e){}
+const ext=C.ext||{};const calls={},other={};const seen=new Set();let total=0,pages=0,firstDay='',lastDay='';
+const read=doc=>{const t=tableOf(doc);if(!t)return 0;const hs=[...(t.querySelector('thead tr:last-child')||t.rows[0]).children].map(c=>norm(T(c)));const ix=k=>hs.findIndex(h=>h===k||h.indexOf(k)>=0);
+const iD=ix('calldate'),iE=ix('caller id'),iDst=ix('destination'),iDur=ix('duration'),iTalk=ix('time calling'),iSt=ix('status');let n=0;
+for(const r of t.querySelectorAll('tbody tr')){const c=[...r.children].map(T);if(c.length<4)continue;const day=(String(c[iD]||'').replace(/\s+/g,'').match(/\d{4}-\d{2}-\d{2}/)||[])[0];if(!day)continue;
+const key=c.slice(0,Math.min(c.length,10)).join('|');if(seen.has(key))continue;seen.add(key);n++;total++;
+const e=String(c[iE]||'').trim();const talk=parseFloat(c[iTalk])||0;const ok=/answer/i.test(c[iSt]||'')?1:0;
+if(!firstDay||day<firstDay)firstDay=day;if(!lastDay||day>lastDay)lastDay=day;
+const s=ext[e];if(!s){other[e]=(other[e]||0)+1;continue;}const m=calls[s]||(calls[s]={});const v=m[day]||(m[day]=[0,0,0]);v[0]++;v[1]+=ok;v[2]+=talk;}return n;};
+const nextOf=doc=>{const c=[...doc.querySelectorAll('a,button,li')].filter(e=>{const tx=T(e);const lab=norm(e.getAttribute('aria-label')||e.getAttribute('title')||'');return (['»','›','>','→','Next','Sau','Tiếp','next'].includes(tx)||lab==='next'||lab.indexOf('next')===0)&&e.children.length<=2;});
+for(const e of c){const a=e.tagName==='LI'?e.querySelector('a,button'):e;if(!a)continue;const li=a.closest('li');const dis=(a.className+' '+(li?li.className:'')).indexOf('disabled')>=0||a.disabled||a.getAttribute('aria-disabled')==='true';if(!dis)return a;}return null;};
+let doc=document,live=true;
+for(let guard=0;guard<2000;guard++){pages++;const n=read(doc);say('Đang đọc trang '+pages+' · '+total+' cuộc gọi…');const nx=nextOf(doc);if(!nx)break;
+const href=nx.getAttribute&&nx.getAttribute('href');
+if(href&&href!=='#'&&!/^javascript/i.test(href)){const u=new URL(href,location.href);const h=await (await fetch(u,{credentials:'include'})).text();doc=new DOMParser().parseFromString(h,'text/html');live=false;if(!tableOf(doc))break;}
+else{if(!live)break;const b=firstRow();nx.click();if(!(await waitChange(b,15000)))break;await sleep(300);}
+if(n===0&&pages>3)break;}
+if(!total){say('❌ Không đọc được cuộc gọi nào. Mở trang Report → Outgoings, bấm 🔍 để hiện danh sách rồi bấm nút lần nữa.');box.appendChild(closeBtn());return;}
+const data={v:1,kind:'vc',bv:C.bv,at:Date.now(),host:location.host,from:from||firstDay,to:to||lastDay,firstDay:firstDay,lastDay:lastDay,rows:total,pages:pages,calls:calls,sales:[...new Set(Object.values(ext))],other:other};
+const b64u=buf=>{let t='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=8192){t+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));}return btoa(t).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
+const raw=new TextEncoder().encode(JSON.stringify(data));let b64;try{const cs=new CompressionStream('deflate-raw');const wr=cs.writable.getWriter();wr.write(raw);wr.close();b64='z'+b64u(await new Response(cs.readable).arrayBuffer());}catch(e){b64=b64u(raw);}
+const viaUrl=(C.url+'?vx='+b64).length<6000;
+const per=Object.entries(calls).map(([s,m])=>s+' '+Object.values(m).reduce((a,v)=>a+v[0],0)).join(' · ');
+const oth=Object.values(other).reduce((a,b)=>a+b,0);
+say('✅ Đã đọc '+total+' cuộc gọi đi ('+pages+' trang, '+(from||firstDay)+' → '+(to||lastDay)+').\n'+per+(oth?'\n(Bỏ qua '+oth+' cuộc của máy lẻ khác)':'')+'\nBấm nút dưới để gửi sang dashboard.');
+const btn=document.createElement('button');btn.innerText='📤 Gửi sang dashboard';btn.style.cssText='margin-top:10px;padding:8px 14px;background:rgb(42,120,214);color:white;border:0;border-radius:6px;font-weight:600;cursor:pointer';
+const ta=document.createElement('textarea');ta.value=b64;ta.readOnly=true;ta.style.cssText='display:block;width:340px;height:60px;margin-top:8px;font:11px monospace';
+const x=closeBtn();
+window.addEventListener('message',e=>{if(e.data==='bx-ready'&&e.source){try{e.source.postMessage({bx:b64},'*');}catch(er){}}else if(e.data==='bx-saved'){say('✅ Dashboard đã nhận dữ liệu và đang lưu. Có thể đóng khung này.');box.appendChild(x);setTimeout(()=>box.remove(),8000);}});
+btn.onclick=async()=>{window.open(viaUrl?C.url+'?vx='+b64:C.url+'?paste=1','_blank');if(viaUrl){box.remove();return;}let ok=false;try{await navigator.clipboard.writeText(b64);ok=true;}catch(e){}say('📤 Đang gửi sang dashboard (tab mới)… thường tự xong sau vài giây.\nNếu dashboard không tự lưu: '+(ok?'bấm vào ô dán trên dashboard, nhấn Cmd/Ctrl + V rồi bấm Lưu.':'bấm vào ô dưới, nhấn Cmd/Ctrl + A rồi Cmd/Ctrl + C, sang dashboard dán vào ô và bấm Lưu.'));box.appendChild(ta);ta.select();box.appendChild(x);};
+box.appendChild(btn);box.appendChild(x);
+}catch(e){say('❌ Lỗi: '+e.message);box.appendChild(closeBtn());}
+})();"""
+
+
+def vc_ext_map(roster_: pd.DataFrame) -> dict[str, str]:
+    """Máy lẻ → tên Sale đầy đủ trong danh sách (Secrets [voicecloud] extensions, chấp nhận tên ngắn như 'Nhi')."""
+    raw = dict(secret("voicecloud_portal", "extensions", VC_EXT_DEFAULT) or {})
+    names = list(roster_["sale"])
+    out = {str(v).strip(): n for v, n in zip(roster_.get("vc_id", pd.Series(dtype=str)), roster_["sale"])
+           if str(v or "").strip() and str(v).strip().lower() != "nan"}
+    for ext_, nm in raw.items():
+        z = _plain(str(nm))
+        hit = next((n for n in names if _plain(n) == z), None) or next(
+            (n for n in names if _plain(n).endswith(" " + z)), None)
+        if hit:
+            out[str(ext_).strip()] = hit
+    return out
+
+
+def vc_href(target_url: str, roster_: pd.DataFrame) -> str:
+    from urllib.parse import quote
+
+    cfg = {"url": target_url, "ext": vc_ext_map(roster_), "bv": VC_VERSION,
+           "months": int(secret("voicecloud_portal", "months", 2))}
+    js_ = "".join(VC_SRC.splitlines()).replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
+    return "javascript:" + quote(js_, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
 
 
 def hara_href(target_url: str, roster: pd.DataFrame) -> str:
@@ -1845,6 +1936,30 @@ else:
             data["meetings"] = mt.drop(columns=["recap", "est_amount", "recap_delay_str", "recap_msg_id", "recap_link"], errors="ignore").merge(rc, on="event_id", how="left")
             status.setdefault("Gmail (recap)", "✅ Đã kết nối")
 
+    vc_snap = None
+    if not roster.empty:
+        try:
+            vc_snap = get_snapshot(VC_SNAP)[0]
+        except Exception as e:
+            problems.append(f"**VoiceCloud** — {type(e).__name__}: {e}")
+    if vc_snap and vc_snap.get("kind") == "vc":   # số cuộc gọi đi đọc từ portal.voicecloud.vn (nút 📞)
+        vrows = []
+        for sale_, days_ in (vc_snap.get("calls") or {}).items():
+            for day_, (n_, _ok, talk_) in days_.items():
+                d_ = date.fromisoformat(day_)
+                if d_start <= d_ <= d_end and int(n_):
+                    ts_ = datetime.combine(d_, time(12), TZ)
+                    vrows += [{"ts": ts_, "sale": sale_, "duration": float(talk_) / int(n_)}] * int(n_)
+        covered = set(vc_snap.get("sales") or []) | set((vc_snap.get("calls") or {}).keys())
+        base_ = data["calls"]
+        base_ = base_[~base_["sale"].isin(covered)] if not base_.empty else base_
+        data["calls"] = pd.concat([base_, pd.DataFrame(vrows, columns=["ts", "sale", "duration"])], ignore_index=True)
+        vc_at = datetime.fromtimestamp(vc_snap.get("at", 0) / 1000, TZ)
+        status["VoiceCloud"] = (f"{'⚠️' if now - vc_at > timedelta(hours=24) else '✅'} Cập nhật {vc_at:%H:%M %d/%m} "
+                                f"({str(vc_snap.get('from', ''))[:10]} → {str(vc_snap.get('to', ''))[:10]})")
+        if str(vc_snap.get("from", ""))[:10] > f"{d_start:%Y-%m-%d}":
+            problems.append(f"**VoiceCloud** — dữ liệu cuộc gọi chỉ có từ {str(vc_snap.get('from'))[:10]}; "
+                            "bấm lại nút 📞 Cập nhật VoiceCloud để lấy đủ kỳ đang xem.")
     if configured("voicecloud") and not roster.empty:
         calls = attempt("VoiceCloud", load_calls, d_start, d_end)
         if calls is not None:
@@ -3445,6 +3560,83 @@ def page_hara_update():
                 "**📤 Gửi sang dashboard** (mất khoảng 30 giây – 1 phút).")
 
 
+def page_vc_update():
+    import streamlit.components.v1 as components
+    st.markdown("Số **cuộc gọi đi** lấy thẳng từ VoiceCloud (portal.voicecloud.vn → **Report → Outgoings**), đếm theo "
+                "máy lẻ (Caller ID) của từng Sale. Dữ liệu lưu vào Google Drive của leader.")
+    emap = vc_ext_map(roster)
+    st.caption("Máy lẻ: " + (" · ".join(f"**{k}** {v}" for k, v in emap.items()) or "chưa khớp được Sale nào")
+               + " — sửa trong Secrets: mục `[voicecloud_portal]` → `extensions = { \"1226\" = \"Hiếu\", … }`, "
+                 "hoặc `voicecloud_id` của từng Sale.")
+    incoming = st.query_params.get("vx", "")
+    paste_mode = st.query_params.get("paste", "") == "1"
+    if paste_mode:
+        components.html(HANDOFF_HTML.replace("__SRC__", "VoiceCloud"), height=28)
+    pasted = ""
+    with st.expander("📋 Dán dữ liệu từ nút Cập nhật VoiceCloud", expanded=paste_mode):
+        with st.form("vx_paste_form", clear_on_submit=True, border=False):
+            txt = st.text_area("Dữ liệu (nút đã tự copy sẵn — chỉ cần dán)", height=90)
+            if st.form_submit_button("💾 Lưu dữ liệu", type="primary"):
+                pasted = txt
+    raw = incoming or pasted
+    if raw:
+        try:
+            snap_v = decode_payload(raw, "vx")
+            if snap_v.get("kind") != "vc":
+                raise ValueError("Đây không phải dữ liệu của nút Cập nhật VoiceCloud.")
+            where, err = save_snapshot(snap_v, VC_SNAP)
+            st.session_state["vx_last"] = (snap_v, where, err)
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Không đọc được dữ liệu: {e}")
+        if incoming or paste_mode:
+            st.query_params.clear()
+            st.rerun()
+    cur = st.session_state["vx_last"][0] if "vx_last" in st.session_state else get_snapshot(VC_SNAP)[0]
+    if "vx_last" in st.session_state:
+        v_, where, err = st.session_state["vx_last"]
+        at_ = datetime.fromtimestamp(v_["at"] / 1000, TZ)
+        per_ = " · ".join(f"{k} {sum(x[0] for x in m.values())}" for k, m in (v_.get("calls") or {}).items())
+        st.success(f"✅ Đã nhận {v_.get('rows', 0)} cuộc gọi đi ({str(v_.get('from'))[:10]} → {str(v_.get('to'))[:10]}) "
+                   f"lúc {at_:%H:%M %d/%m} — lưu tại **{where}**. {per_}")
+        if err:
+            st.warning(f"Chưa lưu được vào Google Drive nên dữ liệu chỉ giữ tạm. Chi tiết: `{err}`")
+    elif cur:
+        at_ = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
+        st.caption(f"Dữ liệu đang dùng: gửi lúc {at_:%H:%M %d/%m}, {cur.get('rows', 0)} cuộc gọi đi, "
+                   f"{str(cur.get('from'))[:10]} → {str(cur.get('to'))[:10]}.")
+    if cur and cur.get("bv") != VC_VERSION:
+        st.warning("⚠️ Dữ liệu đến từ nút cũ — xóa nút cũ, kéo nút mới bên dưới vào rồi bấm lại.")
+    if cur and cur.get("other"):
+        top_ = sorted(cur["other"].items(), key=lambda kv: -kv[1])[:8]
+        st.caption("Máy lẻ khác (không tính): " + " · ".join(f"{k or '—'}: {v}" for k, v in top_))
+
+    st.divider()
+    st.subheader("Cài nút 📞 Cập nhật VoiceCloud (làm 1 lần)")
+    base = secret("bitrix24", "dashboard_url") or ""
+    if not base:
+        try:
+            from urllib.parse import urlparse
+            u = urlparse(st.context.url)
+            base = f"{u.scheme}://{u.netloc}"
+        except Exception:
+            base = ""
+    href = vc_href(base.rstrip("/") + "/cap-nhat-voicecloud", roster)
+    st.markdown("**Cách 1 — kéo thả:** hiện thanh dấu trang (`Cmd/Ctrl + Shift + B`), rồi **kéo nút xanh dưới đây** "
+                "thả lên thanh dấu trang.")
+    components.html(
+        f"""<a href="{href}" onclick="alert('Đừng bấm ở đây — hãy KÉO nút này lên thanh dấu trang, rồi bấm nó khi đang mở VoiceCloud Report → Outgoings.');return false;"
+        style="display:inline-block;padding:10px 18px;background:rgb(42,120,214);color:white;border-radius:8px;
+        font:600 15px sans-serif;text-decoration:none;cursor:grab">📞 Cập nhật VoiceCloud</a>""", height=56)
+    st.markdown("**Cách 2 — tạo tay:** chuột phải thanh dấu trang → **Thêm trang… / Add page…** → Tên: "
+                "`📞 Cập nhật VoiceCloud` → ô **URL** dán toàn bộ đoạn dưới → Lưu.")
+    st.code(href, language=None, wrap_lines=True)
+    st.markdown("**Mỗi lần cập nhật:** đăng nhập `portal.voicecloud.vn` → **Report → Outgoings** → bấm "
+                "**📞 Cập nhật VoiceCloud**. Nút tự đặt **From = đầu tháng trước, To = hôm nay** và bấm 🔍 "
+                "(nếu trang tải lại thì bấm nút thêm 1 lần), rồi đọc hết các trang danh sách và hiện nút "
+                "**📤 Gửi sang dashboard**. Extension / Status để **All**.")
+
+
 def page_bitrix_update():
     import streamlit.components.v1 as components
     st.markdown("Công ty không cho tạo webhook, nên dashboard đọc Bitrix24 **bằng phiên đăng nhập của leader**: "
@@ -3604,10 +3796,13 @@ pages = {"Tổng quan": [
     st.Page(page_won_deals, title="Danh sách deal won", icon="💰", url_path="deal-won"),
 ]}
 settings = []
-if any(st.query_params.get(k_) for k_ in ("bx", "hx", "paste")):   # tab do nút bookmarklet mở để gửi dữ liệu sang
-    st.session_state["recv_page"] = ("hara" if "hx" in st.query_params
-                                     or "haracrm" in str(getattr(st.context, "url", "")) else "bitrix")
-if not OWNER and st.session_state.get("recv_page") == "hara":
+if any(st.query_params.get(k_) for k_ in ("bx", "hx", "vx", "paste")):   # tab do nút bookmarklet mở để gửi dữ liệu sang
+    _u = str(getattr(st.context, "url", ""))
+    st.session_state["recv_page"] = ("vc" if "vx" in st.query_params or "voicecloud" in _u else
+                                     "hara" if "hx" in st.query_params or "haracrm" in _u else "bitrix")
+if not OWNER and st.session_state.get("recv_page") == "vc":
+    settings.append(st.Page(page_vc_update, title="Cập nhật VoiceCloud", icon="📞", url_path="cap-nhat-voicecloud"))
+elif not OWNER and st.session_state.get("recv_page") == "hara":
     settings.append(st.Page(page_hara_update, title="Cập nhật HaraCRM", icon="📈", url_path="cap-nhat-haracrm"))
 elif not OWNER and st.session_state.get("recv_page") == "bitrix" and not DEMO:
     settings.append(st.Page(page_bitrix_update, title="Cập nhật Bitrix", icon="📥", url_path="cap-nhat-bitrix"))
@@ -3617,6 +3812,7 @@ if OWNER and not DEMO and bitrix_mode() == "bookmarklet":
     settings.append(st.Page(page_bitrix_update, title="Cập nhật Bitrix", icon="📥", url_path="cap-nhat-bitrix"))
 if OWNER and not DEMO:
     settings.append(st.Page(page_hara_update, title="Cập nhật HaraCRM", icon="📈", url_path="cap-nhat-haracrm"))
+    settings.append(st.Page(page_vc_update, title="Cập nhật VoiceCloud", icon="📞", url_path="cap-nhat-voicecloud"))
 if settings:
     pages["Cài đặt"] = settings
 pg = st.navigation(pages, position="sidebar", expanded=True)
