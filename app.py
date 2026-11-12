@@ -517,12 +517,6 @@ def _guests(ev: dict, owner: str, internal: list[str]) -> list[str]:
     return out
 
 
-def _plain(t) -> str:
-    import unicodedata
-    t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
-    return " ".join("".join(c for c in t if unicodedata.category(c) != "Mn").split())
-
-
 def norm_text(t: str) -> str:
     import unicodedata
     t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
@@ -1277,303 +1271,6 @@ def vc_ext_map(roster_: pd.DataFrame) -> dict[str, str]:
     return out
 
 
-# ── VoiceCloud portal: dashboard tự đăng nhập (tài khoản chỉ xem) để lấy cuộc gọi đi gần realtime ─────────
-from html.parser import HTMLParser as _HTMLParser
-from urllib.parse import urljoin as _urljoin
-
-
-class _VCPage(_HTMLParser):
-    """Đọc form (input/select/button), bảng và link của một trang HTML — đủ dùng cho portal VoiceCloud."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.forms, self.tables, self.links = [], [], []
-        self._form = self._sel = self._opt = self._a = None
-        self._tbl = self._row = self._cell = None
-        self._btn = None
-
-    def handle_starttag(self, tag, attrs):
-        a = {k: (v or "") for k, v in attrs}
-        if tag == "form":
-            self._form = {"action": a.get("action", ""), "method": (a.get("method") or "GET").upper(),
-                          "inputs": [], "selects": {}, "buttons": []}
-            self.forms.append(self._form)
-        elif tag == "input":
-            item = {"name": a.get("name", ""), "type": (a.get("type") or "text").lower(), "value": a.get("value", ""),
-                    "checked": "checked" in a}
-            if self._form is not None:
-                self._form["inputs"].append(item)
-        elif tag == "select":
-            self._sel = {"name": a.get("name", ""), "options": []}
-            if self._form is not None:
-                self._form["selects"][self._sel["name"]] = self._sel["options"]
-        elif tag == "option" and self._sel is not None:
-            self._opt = [a.get("value"), ""]
-            self._sel["options"].append(self._opt)
-        elif tag == "button":
-            self._btn = {"name": a.get("name", ""), "value": a.get("value", ""), "type": (a.get("type") or "submit").lower()}
-            if self._form is not None:
-                self._form["buttons"].append(self._btn)
-        elif tag == "a":
-            self._a = [a.get("href", ""), ""]
-            self.links.append(self._a)
-        elif tag == "table":
-            self._tbl = []
-            self.tables.append(self._tbl)
-        elif tag == "tr" and self._tbl is not None:
-            self._row = []
-            self._tbl.append(self._row)
-        elif tag in ("td", "th") and self._row is not None:
-            self._cell = [tag, ""]
-            self._row.append(self._cell)
-
-    def handle_endtag(self, tag):
-        if tag == "form":
-            self._form = None
-        elif tag == "select":
-            self._sel = None
-        elif tag == "option":
-            if self._opt is not None and self._opt[0] is None:
-                self._opt[0] = self._opt[1].strip()
-            self._opt = None
-        elif tag == "a":
-            self._a = None
-        elif tag == "button":
-            self._btn = None
-        elif tag in ("td", "th"):
-            self._cell = None
-        elif tag == "tr":
-            self._row = None
-        elif tag == "table":
-            self._tbl = None
-
-    def handle_data(self, data):
-        for obj in (self._opt, self._a, self._cell):
-            if obj is not None:
-                obj[1] += data
-
-
-def _vc_parse(html_: str) -> _VCPage:
-    p = _VCPage()
-    p.feed(html_)
-    return p
-
-
-def _vc_calls_table(p: _VCPage):
-    """Bảng cuộc gọi: (vị trí cột, các dòng). None nếu không thấy."""
-    for t in p.tables:
-        for i, r in enumerate(t[:3]):
-            hs = [_plain(c[1]) for c in r]
-            if any("calldate" in h for h in hs) and any("caller id" in h for h in hs):
-                ix = lambda k: next((j for j, h in enumerate(hs) if k in h), -1)
-                rows = [[" ".join(c[1].split()) for c in rr] for rr in t[i + 1:]]
-                rows = [rr for rr in rows if len(rr) >= 4 and re.search(r"\d{4}-\d{2}-\d{2}", "".join(rr[ix("calldate")].split()))]
-                return {"date": ix("calldate"), "ext": ix("caller id"), "talk": ix("time calling"),
-                        "status": ix("status")}, rows
-    return None
-
-
-class VCPortal:
-    def __init__(self):
-        self.base = str(secret("voicecloud_portal", "url", "https://portal.voicecloud.vn/") or "").strip()
-        self.s = requests.Session()
-        self.s.headers["User-Agent"] = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                                        "(KHTML, like Gecko) Chrome/130 Safari/537.36")
-        self.diag: list[str] = []
-        self.form = None
-
-    def _submit(self, url: str, form: dict, fields: dict) -> requests.Response:
-        act = _urljoin(url, form.get("action") or url)
-        if form.get("method") == "POST":
-            return self.s.post(act, data=fields, timeout=40)
-        return self.s.get(act, params=fields, timeout=40)
-
-    @staticmethod
-    def _fields(form: dict) -> dict:
-        out = {}
-        for i in form["inputs"]:
-            if i["name"] and i["type"] not in ("submit", "button", "image", "file", "reset", "checkbox", "radio"):
-                out[i["name"]] = i["value"]
-            elif i["name"] and i["type"] in ("checkbox", "radio") and i.get("checked"):
-                out[i["name"]] = i["value"]
-        for n_, opts in form["selects"].items():
-            if n_ and opts:
-                out[n_] = opts[0][0]
-        return out
-
-    def login(self):
-        user, pw = secret("voicecloud_portal", "username", ""), secret("voicecloud_portal", "password", "")
-        r = self.s.get(self.base, timeout=40)
-        p = _vc_parse(r.text)
-        form = next((f for f in p.forms if any(i["type"] == "password" for i in f["inputs"])), None)
-        if form is None:
-            if _vc_parse(r.text).tables or "logout" in r.text.lower():
-                self.diag.append("đã đăng nhập sẵn")
-                return r
-            raise RuntimeError(f"Không thấy ô mật khẩu trên trang đăng nhập ({r.url}).")
-        fields = self._fields(form)
-        pwd = next(i for i in form["inputs"] if i["type"] == "password")
-        usr = next((i for i in form["inputs"] if i["type"] in ("text", "email") and i["name"]), None)
-        if usr is None:
-            raise RuntimeError("Không thấy ô Username trên trang đăng nhập.")
-        fields[usr["name"]], fields[pwd["name"]] = user, pw
-        btn = next((b for b in form["buttons"] if b["type"] == "submit" and b["name"]), None)
-        if btn:
-            fields[btn["name"]] = btn["value"]
-        r2 = self._submit(r.url, form, fields)
-        self.diag.append(f"đăng nhập: {form['method']} ô {usr['name']}/{pwd['name']} → {r2.status_code}")
-        if any(any(i["type"] == "password" for i in f["inputs"]) for f in _vc_parse(r2.text).forms):
-            raise RuntimeError("Đăng nhập VoiceCloud không thành công (sai tài khoản/mật khẩu, hoặc trang đăng nhập "
-                               "dùng cách khác).")
-        return r2
-
-    def open_report(self, home: requests.Response):
-        url = str(secret("voicecloud_portal", "report_url", "") or "").strip()
-        if not url:
-            links = _vc_parse(home.text).links
-            hit = next((h for h, t in links if "outgoing" in _plain(t) or "outgoing" in h.lower()), None)
-            if not hit:
-                r_ = self.s.get(_urljoin(home.url, "?/report"), timeout=40)
-                links = _vc_parse(r_.text).links
-                hit = next((h for h, t in links if "outgoing" in _plain(t) or "outgoing" in h.lower()), None)
-            if not hit:
-                raise RuntimeError("Không tìm thấy trang Report → Outgoings — dán link trang đó vào Secrets "
-                                   "`[voicecloud_portal] report_url`.")
-            url = _urljoin(home.url, hit)
-        r = self.s.get(url, timeout=40)
-        p = _vc_parse(r.text)
-        dt = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}")
-        for f in p.forms:
-            ds = [i for i in f["inputs"] if i["name"] and dt.match(i["value"].strip())]
-            if len(ds) >= 2:
-                self.form, self.url, self.d_from, self.d_to = f, r.url, ds[0]["name"], ds[1]["name"]
-                break
-        if self.form is None:
-            raise RuntimeError(f"Không thấy ô From/To trên trang Outgoings ({url}).")
-        self.diag.append(f"trang Outgoings: {url.split('/')[-1] or url} · ô ngày {self.d_from}/{self.d_to}")
-        return self
-
-    def ext_value(self, ext_: str):
-        for n_, opts in self.form["selects"].items():
-            for v, t in opts:
-                if str(v) == ext_ or re.search(rf"(^|\D){re.escape(ext_)}(\D|$)", t or ""):
-                    return n_, v
-        return None, None
-
-    def query(self, a: datetime, b: datetime, ext_: str | None):
-        fields = self._fields(self.form)
-        fields[self.d_from], fields[self.d_to] = f"{a:%Y-%m-%d %H:%M}", f"{b:%Y-%m-%d %H:%M}"
-        if ext_:
-            n_, v = self.ext_value(ext_)
-            if n_:
-                fields[n_] = v
-        btn = next((x for x in self.form["buttons"] if x["name"]), None)
-        if btn:
-            fields[btn["name"]] = btn["value"]
-        r = self._submit(self.url, self.form, fields)
-        res = _vc_calls_table(_vc_parse(r.text))
-        return res if res else ({}, [])
-
-
-def vc_portal_configured() -> bool:
-    return bool(secret("voicecloud_portal", "username", "")) and bool(secret("voicecloud_portal", "password", ""))
-
-
-def vc_portal_fetch(days: list[date], ext_map: dict[str, str], diag: list | None = None) -> dict:
-    """Đếm cuộc gọi đi theo Sale/ngày cho các ngày cho trước: lọc từng máy lẻ, tải từng ngày, tự chia nhỏ khi
-    một lần tải đầy trang (portal chỉ trả 1 trang ~25 dòng)."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    vc = VCPortal()
-    vc.open_report(vc.login())
-    if not days:
-        return {}
-    start = datetime.combine(min(days), time(0))
-    end = datetime.combine(max(days), time(23, 59))
-    cols, sample = vc.query(start, end, None)
-    page = len(sample)
-    vc.diag.append(f"mỗi lần tải {page} dòng")
-    can_filter = all(vc.ext_value(e)[0] for e in ext_map)
-    vc.diag.append("lọc theo máy lẻ" if can_filter else "⚠️ không lọc được theo máy lẻ")
-    targets = list(ext_map) if can_filter else [None]
-    calls: dict[str, dict[str, list]] = {}
-    seen = set()
-    jobs = [(datetime.combine(d, time(0)), datetime.combine(d + timedelta(days=1), time(0)) if d < max(days)
-             else datetime.combine(d, time(23, 59)), e) for e in targets for d in sorted(days)]
-    n_req = 0
-
-    def run(job):
-        a, b, e = job
-        c_, rows = vc.query(a, b, e)
-        return job, c_, rows
-
-    while jobs:
-        batch, jobs = jobs[:16], jobs[16:]
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            results = list(ex.map(run, batch))
-        n_req += len(batch)
-        for (a, b, e), c_, rows in results:
-            if page and len(rows) >= page and (b - a) > timedelta(minutes=4):
-                mid = a + timedelta(minutes=int((b - a).total_seconds() // 120))
-                jobs += [(a, mid, e), (mid, b, e)]
-                continue
-            for r in rows:
-                key = "|".join(r[:10])
-                if key in seen:
-                    continue
-                seen.add(key)
-                ext_ = r[c_["ext"]].strip() if c_["ext"] >= 0 else ""
-                sale = ext_map.get(ext_)
-                if not sale:
-                    continue
-                day = re.search(r"\d{4}-\d{2}-\d{2}", "".join(r[c_["date"]].split())).group(0)
-                v = calls.setdefault(sale, {}).setdefault(day, [0, 0, 0.0])
-                v[0] += 1
-                v[1] += 1 if c_["status"] >= 0 and "answer" in r[c_["status"]].lower() else 0
-                try:
-                    v[2] += float(r[c_["talk"]]) if c_["talk"] >= 0 else 0.0
-                except ValueError:
-                    pass
-    vc.diag.append(f"{n_req} lần tải")
-    if diag is not None:
-        diag.extend(vc.diag)
-    return calls
-
-
-@st.cache_data(ttl=600, show_spinner="📞 Đang lấy cuộc gọi từ VoiceCloud…")
-def vc_portal_sync(d_from: date, d_to: date, ext_items: tuple) -> dict:
-    """Gộp dữ liệu đã lưu + tải lại hôm qua/hôm nay (và các ngày còn thiếu) từ portal; lưu lại vào Drive."""
-    ext_map = dict(ext_items)
-    snap, _, _ = get_snapshot(VC_SNAP)
-    snap = snap if snap and snap.get("kind") == "vc" else {}
-    calls = {s_: dict(m) for s_, m in (snap.get("calls") or {}).items()}
-    have = set(snap.get("days") or [])
-    if snap and not have and snap.get("from") and snap.get("to"):   # dữ liệu từ nút 📞: coi như đủ các ngày trong khoảng
-        d0, d1 = date.fromisoformat(str(snap["from"])[:10]), date.fromisoformat(str(snap["to"])[:10])
-        have = {str(d0 + timedelta(days=i)) for i in range((d1 - d0).days + 1)}
-    today = datetime.now(TZ).date()
-    last = min(d_to, today)
-    need = [d_from + timedelta(days=i) for i in range((last - d_from).days + 1)]
-    need = [d for d in need if str(d) not in have or d >= today - timedelta(days=1)]
-    diag: list[str] = []
-    got = vc_portal_fetch(need, ext_map, diag) if need else {}
-    for s_ in calls:
-        for d in need:
-            calls[s_].pop(str(d), None)
-    for s_, m in got.items():
-        calls.setdefault(s_, {}).update(m)
-    days_all = sorted(have | {str(d) for d in need})
-    new = {"kind": "vc", "src": "portal", "v": 1, "bv": VC_VERSION, "at": int(_time.time() * 1000),
-           "from": days_all[0] if days_all else "", "to": days_all[-1] if days_all else "", "days": days_all,
-           "calls": calls, "sales": sorted(set(ext_map.values())), "other": {}, "diag": diag,
-           "rows": sum(v[0] for m in calls.values() for v in m.values())}
-    try:
-        save_snapshot(new, VC_SNAP)
-    except Exception:
-        pass
-    return new
-
-
 def vc_href(target_url: str, roster_: pd.DataFrame) -> str:
     from urllib.parse import quote
 
@@ -2275,9 +1972,7 @@ else:
             status.setdefault("Gmail (recap)", "✅ Đã kết nối")
 
     vc_snap = None
-    if not roster.empty and vc_portal_configured():   # dashboard tự đăng nhập VoiceCloud (cập nhật 10 phút/lần)
-        vc_snap = attempt("VoiceCloud", vc_portal_sync, d_start, d_end, tuple(sorted(vc_ext_map(roster).items())))
-    if not roster.empty and vc_snap is None:
+    if not roster.empty:
         try:
             vc_snap = get_snapshot(VC_SNAP)[0]
         except Exception as e:
@@ -2295,8 +1990,7 @@ else:
         base_ = base_[~base_["sale"].isin(covered)] if not base_.empty else base_
         data["calls"] = pd.concat([base_, pd.DataFrame(vrows, columns=["ts", "sale", "duration"])], ignore_index=True)
         vc_at = datetime.fromtimestamp(vc_snap.get("at", 0) / 1000, TZ)
-        status["VoiceCloud"] = (f"{'⚠️' if now - vc_at > timedelta(hours=24) else '✅'} "
-                                f"{'Tự động · ' if vc_snap.get('src') == 'portal' else ''}Cập nhật {vc_at:%H:%M %d/%m} "
+        status["VoiceCloud"] = (f"{'⚠️' if now - vc_at > timedelta(hours=24) else '✅'} Cập nhật {vc_at:%H:%M %d/%m} "
                                 f"({str(vc_snap.get('from', ''))[:10]} → {str(vc_snap.get('to', ''))[:10]})")
         if str(vc_snap.get("from", ""))[:10] > f"{d_start:%Y-%m-%d}":
             problems.append(f"**VoiceCloud** — dữ liệu cuộc gọi chỉ có từ {str(vc_snap.get('from'))[:10]}; "
@@ -2491,6 +2185,12 @@ def trend_chart(df: pd.DataFrame, color: str, label: str):
 
 KPI_DEFAULT = {"Võ Minh Hiếu": 100_000_000, "Nguyễn Đức Toàn": 100_000_000,
                "Nguyễn Thị Tuyết Nhi": 100_000_000, "Lê Thị Ngọc Châu": 50_000_000}
+
+
+def _plain(t) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFD", str(t).lower().replace("đ", "d"))
+    return " ".join("".join(c for c in t if unicodedata.category(c) != "Mn").split())
 
 
 def kpi_month(sale: str):
@@ -3947,35 +3647,7 @@ def page_vc_update():
         st.caption("Máy lẻ khác (không tính): " + " · ".join(f"{k or '—'}: {v}" for k, v in top_))
 
     st.divider()
-    st.subheader("🔄 Tự động lấy cuộc gọi (không cần bấm nút)")
-    if vc_portal_configured():
-        st.success(f"Đang bật — dashboard tự đăng nhập VoiceCloud bằng tài khoản "
-                   f"**{secret('voicecloud_portal', 'username', '')}** và cập nhật cuộc gọi **10 phút/lần** "
-                   "(tải lại hôm qua + hôm nay, các ngày cũ giữ số đã lưu).")
-        c1, c2 = st.columns(2)
-        if c1.button("🔌 Kiểm tra kết nối", key="vc_test"):
-            diag_: list[str] = []
-            try:
-                with st.spinner("Đang đăng nhập và tải thử hôm nay…"):
-                    got_ = vc_portal_fetch([now.date()], vc_ext_map(roster), diag_)
-                st.success("✅ Kết nối được. Hôm nay: " + (" · ".join(
-                    f"{k} {sum(v[0] for v in m.values())}" for k, m in got_.items()) or "chưa có cuộc gọi"))
-            except Exception as e:
-                st.error(f"❌ {e}")
-            if diag_:
-                st.caption(" · ".join(diag_))
-        if c2.button("♻️ Lấy lại ngay", key="vc_refresh", help="Bỏ bộ nhớ đệm 10 phút và tải lại từ VoiceCloud"):
-            vc_portal_sync.clear()
-            st.rerun()
-    else:
-        st.markdown("Thêm vào Secrets (nên dùng tài khoản **chỉ xem**, vd. `sale_KV_view`), lưu lại là dashboard tự "
-                    "lấy cuộc gọi 10 phút/lần — không cần bấm nút 📞 nữa:")
-        st.code('[voicecloud_portal]\nusername = "sale_KV_view"\npassword = "mật khẩu"\n'
-                '# report_url = "https://portal.voicecloud.vn/?/…"   # link trang Outgoings, nếu dashboard tự tìm không ra',
-                language="toml")
-
-    st.divider()
-    st.subheader("Cài nút 📞 Cập nhật VoiceCloud (dự phòng)")
+    st.subheader("Cài nút 📞 Cập nhật VoiceCloud (làm 1 lần)")
     base = secret("bitrix24", "dashboard_url") or ""
     if not base:
         try:
