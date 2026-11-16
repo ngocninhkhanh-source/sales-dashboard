@@ -3180,13 +3180,20 @@ def page_deal_open():
         st.warning("Cần dữ liệu mới: leader cài lại nút **📥 Cập nhật Bitrix** (trang Cập nhật Bitrix) rồi bấm trên Bitrix24.")
         return
     st.caption("Deal **đang xử lý** (chưa Won / Lost) hiện nằm ở từng stage trên Bitrix24, tại thời điểm bấm nút cập nhật.")
-    c1, c2 = st.columns([1, 1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     s_pick = c1.selectbox("🔍 Lọc theo Sale", ["Tất cả"] + list(lb["sale"]), key="do_sale")
+    kw_ = c3.text_input("🔤 Tên deal có chứa", key="do_title_kw", placeholder="vd. T11",
+                        help="Không phân biệt hoa/thường, có dấu/không dấu. Nhiều từ: ngăn bởi dấu phẩy "
+                             "(deal chứa 1 trong các từ). Để trống = tất cả.")
     t_opts = ["Tất cả thời gian", "Hôm nay", "Hôm qua", "Tuần này", "Tuần trước", "Tháng này", "Tháng trước",
               "Quý này", "Tùy chọn khoảng ngày"]
     t_mode = c2.selectbox("📅 Ngày tạo deal", t_opts, key="do_time")
     if s_pick != "Tất cả":
         d = d[d["sale"] == s_pick]
+    kws_ = [_plain(x) for x in str(kw_ or "").split(",") if _plain(x)]
+    if kws_:
+        d = d[d["title"].map(lambda t: any(k in _plain(t) for k in kws_)).astype(bool)]
+        c3.caption(f"{len(d)} deal có tên chứa «{'», «'.join(x.strip() for x in str(kw_).split(',') if x.strip())}»")
     if t_mode != "Tất cả thời gian":
         rng_ = None
         if t_mode == "Tùy chọn khoảng ngày":
