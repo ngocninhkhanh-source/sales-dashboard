@@ -3356,37 +3356,41 @@ def page_meetings():
                "nếu không có thì tự khớp tên khách trong tiêu đề meeting với tên deal. "
                "🟢 Đã chốt · 🔵 Đang đàm phán · 🟡 Đang theo (deal được cập nhật ≤14 ngày) · "
                "🔴 Nguội (>14 ngày không chạm) · ⚫ Lost · ⚪ Chưa nối được deal.")
-    if not past.empty:
-        g = past.groupby("sale")
-        summ = pd.DataFrame({"Meeting đã diễn ra": g.size()})
-        for lab in OUTCOME_ORDER[:5]:
-            summ[lab] = g["outcome"].apply(lambda x, l=lab: int((x == l).sum()))
-        summ["⚪ Chưa nối deal"] = g["outcome"].apply(lambda x: int(x.astype(str).str.startswith("⚪").sum()))
-        won_ = past[past["outcome"] == "🟢 Đã chốt"]
-        summ["Tỷ lệ Meeting→Won"] = summ["🟢 Đã chốt"] / summ["Meeting đã diễn ra"].where(summ["Meeting đã diễn ra"] > 0)
-        if not won_.empty and "deal_id" in won_:
-            cl = deals_all.set_index("id")["closed"] if not deals_all.empty else pd.Series(dtype=object)
-            dd = won_.assign(_c=pd.to_datetime(won_["deal_id"].map(cl), errors="coerce"))
-            dd["_d"] = (dd["_c"] - dd["ts"].dt.tz_localize(None).dt.normalize()).dt.days
-            summ["TB ngày Meeting→Won"] = dd[dd["_d"] >= 0].groupby("sale")["_d"].mean().round(1)
-        else:
-            summ["TB ngày Meeting→Won"] = np.nan
-        summ = summ.reindex([s_ for s_ in lb["sale"] if s_ in summ.index])
-        tot = summ.sum(numeric_only=True)
-        tot["Tỷ lệ Meeting→Won"] = tot["🟢 Đã chốt"] / tot["Meeting đã diễn ra"] if tot["Meeting đã diễn ra"] else np.nan
-        tot["TB ngày Meeting→Won"] = summ["TB ngày Meeting→Won"].mean()
-        summ.loc["TỔNG"] = tot
-        summ = summ.reset_index().rename(columns={"sale": "Sale", "index": "Sale"})
-        intc = [c for c in summ.columns if c not in ("Sale", "Tỷ lệ Meeting→Won", "TB ngày Meeting→Won")]
-        summ[intc] = summ[intc].fillna(0).astype(int)
-        sty = (summ.style
-               .format({"Tỷ lệ Meeting→Won": lambda v: "—" if pd.isna(v) else f"{v:.0%}",
-                        "TB ngày Meeting→Won": lambda v: "—" if pd.isna(v) else f"{v:.1f}"})
-               .apply(lambda r: ["font-weight:700;background-color:#f1f5f9" if r["Sale"] == "TỔNG" else ""] * len(r),
-                      axis=1)
-               .set_properties(subset=["Tỷ lệ Meeting→Won"], **{"font-weight": "700", "background-color": "#e6f7f1"}))
-        st.dataframe(sty, hide_index=True, width="stretch",
-                     column_config={"Sale": st.column_config.TextColumn(pinned=True)})
+    g = past.groupby("sale")
+    summ = pd.DataFrame({"Meeting đã diễn ra": g.size()})
+    summ["✅ Đã recap"] = g["status"].apply(lambda x: int((x == "✅ Đã recap").sum())) if not past.empty else 0
+    for lab in OUTCOME_ORDER[:5]:
+        summ[lab] = g["outcome"].apply(lambda x, l=lab: int((x == l).sum()))
+    summ["⚪ Chưa nối deal"] = g["outcome"].apply(lambda x: int(x.astype(str).str.startswith("⚪").sum()))
+    won_ = past[past["outcome"] == "🟢 Đã chốt"]
+    summ["Tỷ lệ Meeting→Won"] = summ["🟢 Đã chốt"] / summ["Meeting đã diễn ra"].where(summ["Meeting đã diễn ra"] > 0)
+    if not won_.empty and "deal_id" in won_:
+        cl = deals_all.set_index("id")["closed"] if not deals_all.empty else pd.Series(dtype=object)
+        dd = won_.assign(_c=pd.to_datetime(won_["deal_id"].map(cl), errors="coerce"))
+        dd["_d"] = (dd["_c"] - dd["ts"].dt.tz_localize(None).dt.normalize()).dt.days
+        summ["TB ngày Meeting→Won"] = dd[dd["_d"] >= 0].groupby("sale")["_d"].mean().round(1)
+    else:
+        summ["TB ngày Meeting→Won"] = np.nan
+    sales_show = [m_sale] if m_sale != "Tất cả" else list(lb["sale"])   # sale chưa có meeting vẫn hiện, số = 0
+    summ = summ.reindex(sales_show)
+    cnt_ = [c for c in summ.columns if c not in ("Tỷ lệ Meeting→Won", "TB ngày Meeting→Won")]
+    summ[cnt_] = summ[cnt_].fillna(0)
+    tot = summ.sum(numeric_only=True)
+    tot["Tỷ lệ Meeting→Won"] = tot["🟢 Đã chốt"] / tot["Meeting đã diễn ra"] if tot["Meeting đã diễn ra"] else np.nan
+    tot["TB ngày Meeting→Won"] = summ["TB ngày Meeting→Won"].mean()
+    summ.loc["TỔNG"] = tot
+    summ.index.name = "Sale"
+    summ = summ.reset_index()
+    intc = [c for c in summ.columns if c not in ("Sale", "Tỷ lệ Meeting→Won", "TB ngày Meeting→Won")]
+    summ[intc] = summ[intc].fillna(0).astype(int)
+    sty = (summ.style
+           .format({"Tỷ lệ Meeting→Won": lambda v: "—" if pd.isna(v) else f"{v:.0%}",
+                    "TB ngày Meeting→Won": lambda v: "—" if pd.isna(v) else f"{v:.1f}"})
+           .apply(lambda r: ["font-weight:700;background-color:#f1f5f9" if r["Sale"] == "TỔNG" else ""] * len(r),
+                  axis=1)
+           .set_properties(subset=["Tỷ lệ Meeting→Won"], **{"font-weight": "700", "background-color": "#e6f7f1"}))
+    st.dataframe(sty, hide_index=True, width="stretch",
+                 column_config={"Sale": st.column_config.TextColumn(pinned=True)})
     st.caption("💡 Để nối chính xác 100%: Sale dán link deal Bitrix (vd. `https://<portal>/crm/deal/details/12345/`) "
                "vào **mô tả sự kiện** trên Google Calendar.")
 
