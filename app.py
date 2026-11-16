@@ -2113,7 +2113,7 @@ def demo_data(d_start: date, d_end: date) -> dict:
                                   "amount": dw["amount"].values,
                                   "source": rng.choice(["Website", "Facebook Ads", "Hotline", "Chat", "Sale tự tìm",
                                                         "Partner giới thiệu"], len(dw)),
-                                  "day": dw["ts"].dt.date.values, "link": "",
+                                  "day": pd.to_datetime(dw["ts"]).dt.date.values, "link": "",
                                   "package": rng.choice(["STANDARD", "PRO", "BUSINESS WEB", "OMNI ADVANCED", "GROW"], len(dw))},
                                  columns=WON_LIST_COLS)
     rows_ = [{"id": r.id, "sale": r.sale, "title": r.title, "status": "open", "stage": r.stage, "amount": r.amount,
@@ -3534,7 +3534,20 @@ def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int
         f'<td class="nb">{len(it) if c == "Tổng" else int((it["sale"] == c).sum()) if not it.empty else 0}</td>'
         for c in cols) + "</tr>"
     body = []
+    wk_of = lambda x: (pd.Timestamp(x).normalize() - pd.Timedelta(days=pd.Timestamp(x).weekday())).tz_localize(None) \
+        if pd.Timestamp(x).tzinfo else pd.Timestamp(x).normalize() - pd.Timedelta(days=pd.Timestamp(x).weekday())
+    weeks_ = [] if hourly else list(dict.fromkeys(wk_of(k) for k in idx))
+    if not it.empty and len(weeks_) > 1:
+        it["w"] = it["k"].map(wk_of)
+    last_w = None
     for k in idx:
+        if len(weeks_) > 1 and wk_of(k) != last_w:      # dòng tổng tuần ở đầu mỗi tuần
+            last_w = wk_of(k)
+            w_it = it[it["w"] == last_w] if not it.empty else it
+            a_, b_ = max(last_w.date(), d_start), min(last_w.date() + timedelta(days=6), d_end, now.date())
+            body.append(f'<tr class="wt"><td class=d>Tuần {a_:%d/%m} – {b_:%d/%m}</td>' + "".join(
+                f'<td>{len(w_it) if c == "Tổng" else int((w_it["sale"] == c).sum()) if not w_it.empty else 0}</td>'
+                for c in cols) + "</tr>")
         lab = day_label(k, hourly)
         tds = "".join(cell(groups.get((k, s_)), ci) for ci, s_ in enumerate(sales_))
         tds += cell(bykey.get(k), len(cols) - 1, with_sale=True, bold=True)
@@ -3555,6 +3568,8 @@ def _hover_day_table(items: pd.DataFrame, sales_: list, fmt_item, max_items: int
 .ht tr.we td{{background:rgba(128,128,128,.12)}}
 .ht tr.we td:last-child{{background:rgba(255,193,7,.30)}}
 .ht tr.wk td{{border-top:3px solid rgba(62,180,137,.75)}}
+.ht tr.wt td{{background:rgba(59,130,246,.12);font-weight:700;border-top:3px solid rgba(59,130,246,.6)}}
+.ht tr.wt td:last-child{{background:rgba(59,130,246,.2)}}
 .ht .pop{{display:none;position:absolute;z-index:999;top:100%;min-width:280px;max-width:420px;text-align:left;
   background:#fff;color:#222;border:1px solid #ccc;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.18);
   padding:8px 12px;font-weight:400;white-space:normal}}
@@ -3611,14 +3626,30 @@ def page_trends():
         def show(tbl):
             num_ = sales_ + ["Tổng"]
             tbl = tbl.copy()
-            tbl["Ngày"] = tbl["Ngày"].map(lambda x: day_label(x, d_start == d_end))
             tot = pd.DataFrame([{"Ngày": "TỔNG", **{c: int(tbl[c].sum()) for c in num_}}])
+            if d_start != d_end:      # dòng tổng tuần ở đầu mỗi tuần
+                tbl["_w"] = tbl["Ngày"].map(lambda x: pd.Timestamp(x).normalize()
+                                            - pd.Timedelta(days=pd.Timestamp(x).weekday()))
+            if d_start != d_end and tbl["_w"].nunique() > 1:
+                parts = []
+                for w_, g_ in tbl.groupby("_w", sort=False):
+                    a_, b_ = max(w_.date(), d_start), min(w_.date() + timedelta(days=6), d_end, now.date())
+                    parts.append(pd.DataFrame([{"Ngày": f"Tuần {a_:%d/%m} – {b_:%d/%m}",
+                                                **{c: int(g_[c].sum()) for c in num_}}]))
+                    g_ = g_.assign(Ngày=g_["Ngày"].map(lambda x: day_label(x, False)))
+                    parts.append(g_)
+                tbl = pd.concat(parts, ignore_index=True)
+            else:
+                tbl["Ngày"] = tbl["Ngày"].map(lambda x: day_label(x, d_start == d_end))
+            tbl = tbl.drop(columns=["_w"], errors="ignore")
             tbl = pd.concat([tot, tbl], ignore_index=True)       # dòng tổng theo từng Sale ở trên cùng
             st.dataframe(tbl.style.set_properties(subset=["Tổng"], **{"background-color": "rgba(255, 193, 7, 0.22)",
                                                                        "font-weight": "bold"})
                          .map(lambda v: "color: rgba(128, 128, 128, 0.5);" if v == 0 else "", subset=sales_)
                          .apply(lambda r: ["font-weight: bold; background-color: rgba(62, 180, 137, 0.18)"] * len(r)
                                 if r["Ngày"] == "TỔNG" else
+                                ["font-weight: bold; background-color: rgba(59, 130, 246, 0.14)"] * len(r)
+                                if str(r["Ngày"]).startswith("Tuần ") else
                                 ["background-color: rgba(128, 128, 128, 0.14)"] * len(r)
                                 if str(r["Ngày"]).startswith(("T7", "CN")) and d_start != d_end else [""] * len(r),
                                 axis=1),
