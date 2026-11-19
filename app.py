@@ -1103,7 +1103,7 @@ def _cfg_list(v) -> list[str]:
 
 
 HARA_SNAP = "sales-dashboard-haracrm.json"
-HARA_VERSION = 5
+HARA_VERSION = 6
 HARA_SRC = r"""(async()=>{
 const C=__CFG__;
 const box=document.createElement('div');
@@ -1133,8 +1133,20 @@ const readAll=async()=>{const tables=[];const seen=new Set();const miss=[];for(c
 const curMonth=()=>{const f=getFilt();const m=(f.match(/\d{1,2}\/(\d{1,2})\/\d{4}/)||f.match(/^\s*\d{1,2}\/(\d{1,2})/)||[])[1];return m?+m:0;};
 const mBtn=m=>qa('button,a,span,div,li').filter(e=>vis(e)&&e.children.length<=1&&T(e)==='T'+m).pop();
 const openFilt=async()=>{const b=qa('button,a').filter(vis).find(e=>norm(T(e))==='doi bo loc');if(b){b.click();await sleep(900);}};
-const periods=[];let miss=[];const nowD=new Date();const want=[];for(let k=(C.months||2)-1;k>=0;k--){want.push(new Date(nowD.getFullYear(),nowD.getMonth()-k,1));}
-for(const d of want){const m=d.getMonth()+1;const label='Tháng '+m;const key=d.getFullYear()+'-'+String(m).padStart(2,'0');let btn=curMonth()===m?null:mBtn(m);if(!btn&&curMonth()!==m){await openFilt();btn=mBtn(m);}if(btn){say('Đang chọn '+label+' trên HaraCRM…');btn.click();let ok=false;for(let i=0;i<40;i++){await sleep(500);if(curMonth()===m){ok=true;break;}if(i===6){const ap=qa('button').filter(vis).find(e=>T(e)==='Áp dụng');if(ap)ap.click();}}if(!ok){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không chuyển được sang '+label});continue;}await sleep(1500);}else if(want.length>1&&curMonth()!==m){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không thấy nút T'+m});continue;}const srcs=C.sources||[];const sAll=srcs.map(norm);
+const periods=[];let miss=[];const nowD=new Date();
+const pad2=n=>String(n).padStart(2,'0');const iso=d=>d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());const vn=d=>pad2(d.getDate())+'/'+pad2(d.getMonth()+1)+'/'+d.getFullYear();
+const D=(y,mo,da)=>new Date(y,mo,da);const Y=nowD.getFullYear(),M=nowD.getMonth(),T0=D(Y,M,nowD.getDate());const wd=(T0.getDay()+6)%7;
+const rangeOf=n=>{switch(norm(n)){case 'hom nay':return [T0,T0];case 'hom qua':{const x=D(Y,M,T0.getDate()-1);return [x,x];}
+case 'tuan nay':return [D(Y,M,T0.getDate()-wd),T0];case 'tuan truoc':return [D(Y,M,T0.getDate()-wd-7),D(Y,M,T0.getDate()-wd-1)];
+case 'thang nay':return [D(Y,M,1),T0];case 'thang truoc':return [D(Y,M-1,1),D(Y,M,0)];case '7 ngay':return [D(Y,M,T0.getDate()-6),T0];case '30 ngay':return [D(Y,M,T0.getDate()-29),T0];}return null;};
+const dIn=()=>qa('input[type=date]').filter(vis);
+const setD=(el,v)=>{const st_=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;st_.call(el,v);for(const ev of ['input','change'])el.dispatchEvent(new Event(ev,{bubbles:true}));};
+const want=(C.periods&&C.periods.length?C.periods:['Tuần này','Tuần trước','Tháng này','Tháng trước']).map(n=>({label:n,r:rangeOf(n)})).filter(x=>x.r);
+for(const w of want){const [f,t]=w.r;const label=w.label;const key=iso(f)+'_'+iso(t);
+const isCur=()=>{const g=getFilt();return g.indexOf(vn(f))===0&&g.indexOf(vn(t))>0;};
+if(!isCur()){const di=dIn();if(di.length>=2){say('Đang chọn '+label+' ('+vn(f)+' → '+vn(t)+') trên HaraCRM…');setD(di[0],iso(f));setD(di[1],iso(t));await sleep(300);const ap=qa('button').filter(vis).find(e=>norm(T(e))==='ap dung');if(ap)ap.click();let ok=false;for(let i=0;i<40;i++){await sleep(500);if(isCur()){ok=true;break;}}if(!ok){periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không chuyển được sang '+label+' ('+vn(f)+' → '+vn(t)+')'});continue;}await sleep(1500);}
+else{periods.push({key:key,label:label,filter:getFilt(),tables:[],err:'Không thấy ô Từ / Đến ngày trên HaraCRM'});continue;}}
+const srcs=C.sources||[];const sAll=srcs.map(norm);
 const srcBtn=l=>qa('button,a,span,div,label,li').filter(e=>vis(e)&&e.children.length<=1&&norm(T(e))===norm(l)&&e.parentElement&&sAll.every(x=>norm(T(e.parentElement.parentElement||e.parentElement)).indexOf(x)>=0)).sort((a,b)=>T(a.parentElement.parentElement||a.parentElement).length-T(b.parentElement.parentElement||b.parentElement).length)[0];
 const dx=()=>qa('span,div,p').filter(vis).map(T).filter(x=>x.length<300&&x.indexOf('Đang xem')>=0).sort((a,b)=>a.length-b.length)[0]||'';
 const ptab=[];let srcErr='';
@@ -1161,6 +1173,7 @@ box.appendChild(btn);box.appendChild(x);
 
 
 HARA_SOURCES = ["Tất cả", "Nguồn công ty", "Sale tự tìm"]
+HARA_PERIODS = ["Tuần này", "Tuần trước", "Tháng này", "Tháng trước"]   # kỳ nút HaraCRM đọc (Từ/Đến + Áp dụng)
 VC_SNAP = "sales-dashboard-voicecloud.json"
 VC_VERSION = 3
 VC_EXT_DEFAULT = {"1226": "Hiếu", "1021": "Toàn", "1177": "Nhi", "1008": "Châu"}   # máy lẻ VoiceCloud → Sale
@@ -1593,6 +1606,7 @@ def hara_href(target_url: str, roster: pd.DataFrame) -> str:
            "tabs": list(secret("haracrm", "tabs", ["Điều hành", "Năng lực NV"])),
            "names": list(roster["sale"]), "wait": int(secret("haracrm", "wait_ms", 15000)), "bv": HARA_VERSION,
            "months": int(secret("haracrm", "months", 2)),
+           "periods": list(secret("haracrm", "periods", HARA_PERIODS)),
            "sources": list(secret("haracrm", "sources", HARA_SOURCES))}
     js = "".join(HARA_SRC.splitlines()).replace("__CFG__", json.dumps(cfg, ensure_ascii=False))
     return "javascript:" + quote(js, safe="()[]{}=;:,.'!*+/?&<>|-_~@$")
@@ -2801,8 +2815,10 @@ def page_hara():
                                     "tables": h.get("tables", [])}]
     labels = [p_["label"] for p_ in periods]
     side = period_label(d_start, d_end, now.date())
-    pick = st.segmented_control("Tháng (HaraCRM)", labels, default=side if side in labels else labels[-1],
-                                key="hara_period", label_visibility="collapsed") or labels[-1]
+    dflt_ = mode if mode in labels else (side if side in labels else
+                                         ("Tháng này" if "Tháng này" in labels else labels[-1]))
+    pick = st.segmented_control("Kỳ (HaraCRM)", labels, default=dflt_, key=f"hara_period_{mode}",   # theo kỳ ở thanh bên
+                                label_visibility="collapsed") or dflt_
     per = next(p_ for p_ in periods if p_["label"] == pick)
     filt_ = re.sub(r"\s*Đổi bộ lọc\s*", " ", str(per.get("filter") or "")).strip()
     st.caption(f"Kỳ: **{filt_ or pick}** · cập nhật {at_:%H:%M %d/%m}.")
