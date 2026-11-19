@@ -1109,7 +1109,7 @@ const C=__CFG__;
 const box=document.createElement('div');
 box.style.cssText='position:fixed;z-index:2147483647;top:16px;right:16px;width:380px;padding:16px;background:white;color:rgb(34,34,34);border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.25);font:14px/1.5 sans-serif;white-space:pre-line';
 document.body.appendChild(box);
-const say=t=>{box.innerText='📈 Cập nhật HaraCRM → Dashboard\n'+t;};
+const say=t=>{box.innerText='📈 Cập nhật HaraCRM v'+C.bv+' → Dashboard\n'+t;};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const T=e=>String((e&&(e.innerText||e.textContent))||'').replace(/\s+/g,' ').trim();
 const vis=e=>!!(e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length));
@@ -3929,10 +3929,14 @@ def page_hara_update():
         at_ = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
         st.caption(f"Dữ liệu đang dùng: gửi lúc {at_:%H:%M %d/%m}, kỳ trên HaraCRM: {cur.get('filter') or 'không rõ'}.")
     if cur and cur.get("bv") != HARA_VERSION:
-        st.warning("⚠️ Dữ liệu đến từ nút cũ — xóa nút cũ, kéo nút mới bên dưới vào rồi bấm lại.")
+        at_o = datetime.fromtimestamp(cur.get("at", 0) / 1000, TZ)
+        st.warning(f"⚠️ Dữ liệu đang dùng (gửi lúc **{at_o:%H:%M %d/%m}**) đến từ nút **v{cur.get('bv', '?')}**, "
+                   f"nút mới nhất là **v{HARA_VERSION}**. Làm lại: **tải lại trang này** (F5) → xóa nút "
+                   "\"📈 Cập nhật HaraCRM\" cũ trên thanh dấu trang → kéo nút mới bên dưới (có chữ "
+                   f"**v{HARA_VERSION}**) lên → mở HaraCRM, bấm nút đó → 📤 Gửi sang dashboard.")
 
     st.divider()
-    st.subheader("Cài nút 📈 Cập nhật HaraCRM (làm 1 lần)")
+    st.subheader(f"Cài nút 📈 Cập nhật HaraCRM v{HARA_VERSION} (làm 1 lần)")
     base = secret("bitrix24", "dashboard_url") or ""
     if not base:
         try:
@@ -3947,15 +3951,17 @@ def page_hara_update():
     components.html(
         f"""<a href="{href}" onclick="alert('Đừng bấm ở đây — hãy KÉO nút này lên thanh dấu trang, rồi bấm nó khi đang mở dashboard HaraCRM.');return false;"
         style="display:inline-block;padding:10px 18px;background:rgb(42,120,214);color:white;border-radius:8px;
-        font:600 15px sans-serif;text-decoration:none;cursor:grab">📈 Cập nhật HaraCRM</a>""", height=56)
+        font:600 15px sans-serif;text-decoration:none;cursor:grab">📈 Cập nhật HaraCRM v{HARA_VERSION}</a>""", height=56)
     st.markdown("**Cách 2 — tạo tay:** chuột phải thanh dấu trang → **Thêm trang… / Add page…** → Tên: "
-                "`📈 Cập nhật HaraCRM` → ô **URL** dán toàn bộ đoạn dưới → Lưu.")
+                f"`📈 Cập nhật HaraCRM v{HARA_VERSION}` → ô **URL** dán toàn bộ đoạn dưới → Lưu.")
     st.code(href, language=None, wrap_lines=True)
     tabs_ = list(secret("haracrm", "tabs", ["Điều hành", "Năng lực NV"]))
     st.markdown("**Mỗi lần cập nhật:** mở `salemaxcr.haracrm.com/dashboard` → chọn **Vùng / Team** muốn xem → "
-                f"bấm **📈 Cập nhật HaraCRM**. Nút tự bấm **tháng trước** rồi **tháng này** (nút T10, T11…), mỗi tháng "
-                f"mở lần lượt các tab {', '.join(tabs_)} và đọc các bảng có dòng của team, rồi hiện nút "
-                "**📤 Gửi sang dashboard** (mất khoảng 30 giây – 1 phút).")
+                f"bấm **📈 Cập nhật HaraCRM v{HARA_VERSION}**. Nút tự chọn lần lượt các kỳ "
+                f"**{', '.join(secret('haracrm', 'periods', HARA_PERIODS))}** (ô Từ / Đến + Áp dụng), mỗi kỳ 3 nguồn, "
+                f"mở các tab {', '.join(tabs_)} và đọc bảng của team, rồi hiện nút **📤 Gửi sang dashboard** "
+                "(mất khoảng 2–3 phút). Khung thông báo của nút có ghi **v" + str(HARA_VERSION) + "** — nếu không thấy "
+                "là đang bấm nút cũ.")
 
 
 def page_vc_update():
