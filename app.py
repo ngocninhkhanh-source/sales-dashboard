@@ -2813,13 +2813,23 @@ def page_hara():
     at_ = datetime.fromtimestamp(h.get("at", 0) / 1000, TZ)
     periods = h.get("periods") or [{"label": h.get("filter") or "Kỳ đã chọn", "filter": h.get("filter"),
                                     "tables": h.get("tables", [])}]
-    labels = [p_["label"] for p_ in periods]
+    m_cur = now.month
+    m_prev = (now.date().replace(day=1) - timedelta(days=1)).month
+    alias = {f"Tháng {m_cur}": "Tháng này", f"Tháng {m_prev}": "Tháng trước"}   # dữ liệu nút cũ ghi "Tháng 11"
+    by_label = {}
+    for p_ in periods:
+        by_label.setdefault(alias.get(p_["label"], p_["label"]), p_)
+    labels = list(dict.fromkeys(list(secret("haracrm", "periods", HARA_PERIODS)) + list(by_label)))
     side = period_label(d_start, d_end, now.date())
-    dflt_ = mode if mode in labels else (side if side in labels else
-                                         ("Tháng này" if "Tháng này" in labels else labels[-1]))
+    dflt_ = mode if mode in labels else (side if side in labels else "Tháng này")
     pick = st.segmented_control("Kỳ (HaraCRM)", labels, default=dflt_, key=f"hara_period_{mode}",   # theo kỳ ở thanh bên
                                 label_visibility="collapsed") or dflt_
-    per = next(p_ for p_ in periods if p_["label"] == pick)
+    if pick not in by_label:
+        st.info(f"Chưa có số **{pick}** từ HaraCRM — dữ liệu hiện có gửi lúc {at_:%H:%M %d/%m} chỉ gồm: "
+                f"{', '.join(by_label) or '—'}. Leader bấm nút **📈 Cập nhật HaraCRM v{HARA_VERSION}** trên HaraCRM "
+                "(nút mới đọc đủ Tuần này / Tuần trước / Tháng này / Tháng trước) rồi Gửi sang dashboard.")
+        return
+    per = by_label[pick]
     filt_ = re.sub(r"\s*Đổi bộ lọc\s*", " ", str(per.get("filter") or "")).strip()
     st.caption(f"Kỳ: **{filt_ or pick}** · cập nhật {at_:%H:%M %d/%m}.")
     if per.get("err"):
